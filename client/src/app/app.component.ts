@@ -4,11 +4,11 @@ import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
 
 type Role = 'USER' | 'ADMIN';
-type Section = 'subscriptions' | 'videos' | 'account' | 'users' | 'settings' | 'jellyfin' | 'cache' | 'jobs';
+type Section = 'subscriptions' | 'videos' | 'downloads' | 'account' | 'users' | 'settings' | 'jellyfin' | 'cache' | 'jobs';
 
 interface Profile { id: number; username: string; role: Role; filesystemSlug: string; }
 interface Subscription { id: number; channel_id: string; name: string; url?: string; enabled: boolean | number; last_checked_at?: string | null; last_successful_sync_at?: string | null; }
-interface Video { video_id: string; title: string; description?: string | null; published_at?: string | null; duration_seconds?: number | null; channel?: string | null; library_path?: string | null; }
+interface Video { video_id: string; title: string; description?: string | null; published_at?: string | null; duration_seconds?: number | null; channel?: string | null; library_path?: string | null; cache_status?: 'NOT_CACHED' | 'PARTIAL' | 'COMPLETE'; cache_last_accessed_at?: string | null; cache_expires_at?: string | null; cache_bytes?: number; cached_fragments?: number; downloaded?: number | boolean; }
 interface AdminUser { id: number; username: string; email?: string | null; role: Role; filesystem_slug: string; created_at: string; }
 interface CacheEntry { video_id: string; format_key?: string; status: string; last_accessed_at?: string; active_readers?: number; active_writers?: number; }
 interface Job { id: string; video_id: string; status: string; priority: number; created_at: string; error?: string | null; }
@@ -70,7 +70,7 @@ export class AppComponent implements OnInit {
   readonly secretSettings = new Set(['youtube_api_key', 'jellyfin_api_key', 'proxy_password', 'cookie_file', 'youtube_po_token', 'youtube_po_token_provider_args']);
   readonly settingGroups: Array<{ title: string; keys: string[] }> = [
     { title: 'Playback', keys: ['stream_quality', 'allowed_video_codecs', 'preferred_video_codecs', 'allowed_audio_codecs', 'preferred_audio_codecs', 'public_base_url'] },
-    { title: 'Cache', keys: ['cache_retention_days', 'cache_min_free_gb', 'background_download_max_mbps'] },
+    { title: 'Cache', keys: ['cache_retention_days', 'cache_min_free_gb', 'background_download_max_mbps', 'newest_videos_to_download'] },
     { title: 'YouTube', keys: ['youtube_api_key', 'initial_channel_import_count', 'subscription_sync_minutes', 'youtube_player_client', 'youtube_po_token_provider_enabled', 'youtube_po_token', 'youtube_po_token_provider_args'] },
     { title: 'Jellyfin', keys: ['jellyfin_enabled', 'jellyfin_url', 'jellyfin_api_key', 'jellyfin_auto_refresh', 'jellyfin_runtime_sync', 'jellyfin_request_timeout_seconds'] },
     { title: 'Network and yt-dlp', keys: ['yt_dlp_path', 'ffmpeg_path', 'proxy_url', 'proxy_username', 'proxy_password', 'cookie_file'] }
@@ -221,6 +221,8 @@ export class AppComponent implements OnInit {
   }
 
   enabled(subscription: Subscription): boolean { return subscription.enabled === true || subscription.enabled === 1; }
+  downloaded(video: Video): boolean { return video.downloaded === true || video.downloaded === 1 || video.cache_status === 'COMPLETE'; }
+  formatBytes(bytes: number | null | undefined): string { const value = Number(bytes || 0); if (value < 1) return '—'; const units = ['B', 'KB', 'MB', 'GB', 'TB']; const index = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1024))); return `${(value / Math.pow(1024, index)).toFixed(index === 0 ? 0 : 1)} ${units[index]}`; }
   formatDuration(seconds: number | null | undefined): string { if (!seconds || seconds < 1) return 'Runtime pending'; const hours = Math.floor(seconds / 3600); const minutes = Math.floor((seconds % 3600) / 60); const remainder = seconds % 60; return hours > 0 ? `${hours}:${this.twoDigits(minutes)}:${this.twoDigits(remainder)}` : `${minutes}:${this.twoDigits(remainder)}`; }
   playbackUrl(video: Video): string { return `/play/${encodeURIComponent(video.video_id)}`; }
 

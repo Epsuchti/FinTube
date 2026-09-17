@@ -1,6 +1,7 @@
 package ch.it4user.fintube.integration;
 
 import ch.it4user.fintube.core.Database;
+import ch.it4user.fintube.media.BackgroundFillService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
@@ -47,13 +48,15 @@ public class YouTubeSyncService {
 
   final Database db;
   final JellyfinSyncService jellyfin;
+  final BackgroundFillService filler;
   final ObjectMapper json = new ObjectMapper();
   final HttpClient http = HttpClient.newHttpClient();
   private final ConcurrentHashMap<String, Object> channelLocks = new ConcurrentHashMap<>();
 
-  public YouTubeSyncService(Database db, JellyfinSyncService jellyfin) {
+  public YouTubeSyncService(Database db, JellyfinSyncService jellyfin, BackgroundFillService filler) {
     this.db = db;
     this.jellyfin = jellyfin;
+    this.filler = filler;
   }
 
   /** Synchronize once, then ensure the requested user's known videos are linked. */
@@ -126,10 +129,26 @@ public class YouTubeSyncService {
       updateChannelSuccess(channel, successAt, newestPublished);
       markSubscriptionsSynced(channel, successAt);
       linkEnabledSubscribers(channel);
+      prefetchNewest(channel, settings);
       return count;
     } catch (Exception failure) {
       markChannelFailure(channel, Database.now(), safeError(failure));
       throw failure;
+    }
+  }
+
+  /** Enqueue globally shared, low-priority cache fills for a channel's latest X videos. */
+  private void prefetchNewest(String channel, Map<String, String> settings) {
+    int limit;
+    try { limit = Math.max(0, Math.min(1000, Integer.parseInt(settings.getOrDefault("newest_videos_to_download", "0")))); }
+    catch (NumberFormatException ignored) { return; }
+    if (limit == 0) return;
+    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
+        "SELECT video_id FROM videos WHERE channel_id=? AND availability='AVAILABLE' ORDER BY published_at DESC LIMIT ?")) {
+      p.setString(1, channel); p.setInt(2, limit);
+      try (ResultSet r = p.executeQuery()) { while (r.next()) filler.enqueue(r.getString(1)); }
+    } catch (Exception ignored) {
+      // Prefetch must never fail metadata synchronization or interactive playback.
     }
   }
 

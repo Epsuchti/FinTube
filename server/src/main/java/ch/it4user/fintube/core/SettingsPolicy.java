@@ -19,7 +19,7 @@ public final class SettingsPolicy {
             "youtube_api_key", "jellyfin_api_key", "proxy_password", "cookie_file", "youtube_po_token", "youtube_po_token_provider_args");
     private static final Set<String> ALLOWED_KEYS = Set.of(
             "stream_quality", "cache_retention_days", "cache_min_free_gb",
-            "background_download_max_mbps", "cache_cleanup_interval_minutes", "initial_channel_import_count",
+            "background_download_max_mbps", "cache_cleanup_interval_minutes", "newest_videos_to_download", "initial_channel_import_count",
             "subscription_sync_minutes", "public_base_url", "preferred_video_codecs",
             "preferred_audio_codecs", "youtube_api_key", "jellyfin_url", "jellyfin_api_key",
             "jellyfin_enabled", "jellyfin_auto_refresh", "jellyfin_runtime_sync", "jellyfin_request_timeout_seconds",
@@ -43,6 +43,7 @@ public final class SettingsPolicy {
                 case "cache_min_free_gb" -> integerInRange(key, value, 0, 1_000_000);
                 case "background_download_max_mbps" -> integerInRange(key, value, 1, 1_000_000);
                 case "cache_cleanup_interval_minutes" -> integerInRange(key, value, 1, 10080);
+                case "newest_videos_to_download" -> integerInRange(key, value, 0, 1000);
                 case "initial_channel_import_count" -> integerInRange(key, value, 0, 1000);
                 case "subscription_sync_minutes" -> integerInRange(key, value, 1, 10080);
                 case "jellyfin_enabled", "jellyfin_auto_refresh", "jellyfin_runtime_sync", "youtube_po_token_provider_enabled" -> require("true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value), key + " must be true or false");

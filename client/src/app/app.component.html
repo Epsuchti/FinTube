@@ -40,6 +40,7 @@
         <p class="nav-label">LIBRARY</p>
         <button [class.active]="section() === 'subscriptions'" type="button" (click)="setSection('subscriptions')">Subscriptions</button>
         <button [class.active]="section() === 'videos'" type="button" (click)="setSection('videos')">Videos <span>{{ videos().length }}</span></button>
+        <button [class.active]="section() === 'downloads'" type="button" (click)="setSection('downloads')">Downloads</button>
         <p class="nav-label">ACCOUNT</p>
         <button [class.active]="section() === 'account'" type="button" (click)="setSection('account')">Profile &amp; security</button>
         @if (me()?.role === 'ADMIN') {
@@ -68,6 +69,10 @@
               <article class="video-card"><div class="video-art"><span>▶</span></div><div class="video-content"><h3>{{ video.title }}</h3><p class="muted">{{ video.channel || 'Unknown channel' }} · {{ formatDuration(video.duration_seconds) }}</p><p class="muted small">{{ video.published_at ? (video.published_at | date:'mediumDate') : 'Publication date unavailable' }}</p><div class="card-actions"><a class="button primary" [href]="playbackUrl(video)" target="_blank" rel="noopener">Play</a><button type="button" (click)="setSection('subscriptions')">Manage channel</button></div></div></article>
             } @empty {<div class="empty-state"><div class="empty-icon">▶</div><h3>Your library is empty</h3><p class="muted">Refresh an enabled subscription to discover videos.</p></div>}
           </div>
+        }
+        @if (section() === 'downloads') {
+          <div class="page-heading"><div><p class="eyebrow">SHARED MEDIA CACHE</p><h1>Downloads</h1><p class="muted">Cache state is shared globally, but this table shows only videos in your library.</p></div><span class="count-pill">{{ videos().length }} videos</span></div>
+          <section class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Video</th><th>Channel</th><th>Cache status</th><th>Downloaded</th><th>Fragments</th><th>Cached size</th><th>Last accessed</th><th>Expires</th></tr></thead><tbody>@for (video of videos(); track video.video_id) {<tr><td><strong>{{ video.title }}</strong><small class="mono">{{ video.video_id }}</small></td><td>{{ video.channel || '—' }}</td><td><span class="status" [class.status-running]="video.cache_status === 'PARTIAL'" [class.status-off]="video.cache_status === 'NOT_CACHED'">{{ video.cache_status || 'NOT_CACHED' }}</span></td><td>{{ downloaded(video) ? 'Yes' : 'No' }}</td><td>{{ video.cached_fragments || 0 }}</td><td>{{ formatBytes(video.cache_bytes) }}</td><td>{{ video.cache_last_accessed_at ? (video.cache_last_accessed_at | date:'medium') : 'Never' }}</td><td>{{ video.cache_expires_at ? (video.cache_expires_at | date:'medium') : '—' }}</td></tr>} @empty {<tr><td colspan="8" class="empty-cell">No fetched videos yet. Refresh a subscription first.</td></tr>}</tbody></table></div></section>
         }
         @if (section() === 'account') {
           <div class="page-heading"><div><p class="eyebrow">ACCOUNT</p><h1>Profile &amp; security</h1><p class="muted">Manage your account credentials. Global infrastructure settings remain administrator-only.</p></div></div>

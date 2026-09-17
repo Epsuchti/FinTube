@@ -14,6 +14,8 @@ The application is at `http://localhost:8080`. Configure the YouTube Data API ke
 
 Persistent state defaults to `./data` and can be relocated with `FINTUBE_DATA_DIR`. It contains a SQLite database, `users/<safe-user-slug>/` Jellyfin trees and the global `cache/` tree. Map each individual user directory as a separate Jellyfin library; do not map the parent `users` directory to every Jellyfin account.
 
+`initial_channel_import_count` controls metadata/history import for a newly added channel (default `20`). `newest_videos_to_download` controls optional low-priority media prefetch of each channel's newest videos (default `0`, disabled). Prefetch jobs fill the global shared cache once; they never download separately for each user.
+
 ## Architecture
 
 - Accounts use BCrypt hashes and opaque HTTP-only server-side session cookies. Subscription/library queries are always filtered by authenticated user ID; admin endpoints require `ADMIN`.
