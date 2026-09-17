@@ -1,0 +1,5 @@
+main { min-height: 100vh; display: grid; align-content: center; justify-items: center; gap: 1rem; padding: 2rem; text-align: center; background: radial-gradient(circle at 50% 20%, #173e5d, #07121f 60%); }
+.eyebrow { margin: 0; color: #75d3ff; font-size: .75rem; font-weight: 700; letter-spacing: .18em; }
+h1 { margin: 0; font-size: clamp(3.5rem, 12vw, 7rem); letter-spacing: -.07em; }
+.subtitle { margin: 0; color: #afc1d5; font-size: 1.2rem; }
+.api-status { margin-top: 1rem; border: 1px solid #285b7e; border-radius: 999px; padding: .7rem 1rem; background: #0b2134; color: #b9e5ff; }
