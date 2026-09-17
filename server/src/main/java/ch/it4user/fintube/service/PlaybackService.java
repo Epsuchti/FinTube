@@ -1,9 +1,9 @@
 package ch.it4user.fintube.service;
 
-import ch.it4user.fintube.core.Database;
 import ch.it4user.fintube.media.BackgroundFillService;
 import ch.it4user.fintube.media.FragmentManager;
 import ch.it4user.fintube.media.MediaSourceService;
+import ch.it4user.fintube.persistence.repositories.UserVideoRepository;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -13,19 +13,17 @@ import org.springframework.web.server.ResponseStatusException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
 
 /** Application service for stable Jellyfin playback and shared fragment access. */
 @Service
 public class PlaybackService {
-    private final Database db;
+    private final UserVideoRepository userVideos;
     private final MediaSourceService sources;
     private final FragmentManager fragments;
     private final BackgroundFillService filler;
 
-    public PlaybackService(Database db, MediaSourceService sources, FragmentManager fragments, BackgroundFillService filler) {
-        this.db = db;
+    public PlaybackService(UserVideoRepository userVideos, MediaSourceService sources, FragmentManager fragments, BackgroundFillService filler) {
+        this.userVideos = userVideos;
         this.sources = sources;
         this.fragments = fragments;
         this.filler = filler;
@@ -79,11 +77,9 @@ public class PlaybackService {
         }
     }
 
-    private void valid(String video, String token) throws Exception {
-        try (Connection connection = db.open(); PreparedStatement statement = connection.prepareStatement("SELECT 1 FROM user_videos WHERE video_id=? AND playback_token=?")) {
-            statement.setString(1, video);
-            statement.setString(2, token);
-            if (!statement.executeQuery().next()) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+    private void valid(String video, String token) {
+        if (!userVideos.existsByIdVideoIdAndPlaybackToken(video, token)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         }
     }
 

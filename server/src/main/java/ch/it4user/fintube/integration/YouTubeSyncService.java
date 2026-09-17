@@ -1,9 +1,23 @@
 package ch.it4user.fintube.integration;
 
-import ch.it4user.fintube.core.Database;
+import ch.it4user.fintube.core.ApplicationPaths;
+import ch.it4user.fintube.core.ApplicationClock;
+import ch.it4user.fintube.core.SettingsService;
 import ch.it4user.fintube.media.BackgroundFillService;
+import ch.it4user.fintube.persistence.entities.UserEntity;
+import ch.it4user.fintube.persistence.repositories.UserRepository;
+import ch.it4user.fintube.persistence.entities.UserVideoEntity;
+import ch.it4user.fintube.persistence.entities.UserVideoId;
+import ch.it4user.fintube.persistence.repositories.UserVideoRepository;
+import ch.it4user.fintube.persistence.entities.VideoEntity;
+import ch.it4user.fintube.persistence.repositories.VideoRepository;
+import ch.it4user.fintube.persistence.entities.YouTubeChannelEntity;
+import ch.it4user.fintube.persistence.repositories.YouTubeChannelRepository;
+import ch.it4user.fintube.persistence.entities.YouTubeSubscriptionEntity;
+import ch.it4user.fintube.persistence.repositories.YouTubeSubscriptionRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
 import java.net.URI;
@@ -16,10 +30,6 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -46,15 +56,31 @@ public class YouTubeSyncService {
       Pattern.compile("PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?");
   private static final int MAX_INCREMENTAL_PAGES = 20;
 
-  final Database db;
+  final SettingsService settings;
+  final YouTubeChannelRepository channels;
+  final YouTubeSubscriptionRepository subscriptions;
+  final VideoRepository videos;
+  final UserVideoRepository userVideos;
+  final UserRepository users;
+  final ApplicationPaths paths;
   final JellyfinSyncService jellyfin;
   final BackgroundFillService filler;
   final ObjectMapper json = new ObjectMapper();
   final HttpClient http = HttpClient.newHttpClient();
   private final ConcurrentHashMap<String, Object> channelLocks = new ConcurrentHashMap<>();
 
-  public YouTubeSyncService(Database db, JellyfinSyncService jellyfin, BackgroundFillService filler) {
-    this.db = db;
+  public YouTubeSyncService(SettingsService settings, YouTubeChannelRepository channels,
+                            YouTubeSubscriptionRepository subscriptions, VideoRepository videos,
+                            UserVideoRepository userVideos, UserRepository users,
+                            ApplicationPaths paths, JellyfinSyncService jellyfin,
+                            BackgroundFillService filler) {
+    this.settings = settings;
+    this.channels = channels;
+    this.subscriptions = subscriptions;
+    this.videos = videos;
+    this.userVideos = userVideos;
+    this.users = users;
+    this.paths = paths;
     this.jellyfin = jellyfin;
     this.filler = filler;
   }
@@ -80,15 +106,15 @@ public class YouTubeSyncService {
   }
 
   private int syncChannelLocked(String channel) throws Exception {
-    Map<String, String> settings = db.settings(false);
-    String key = settings.get("youtube_api_key");
+    Map<String, String> currentSettings = settings();
+    String key = currentSettings.get("youtube_api_key");
     if (key == null || key.isBlank()) throw new IllegalStateException("YouTube API key is not configured");
 
-    String attemptAt = Database.now();
+    String attemptAt = now();
     markChannelAttempt(channel, attemptAt);
     try {
       String cursor = channelCursor(channel);
-      List<JsonNode> searchItems = discover(channel, key, cursor, settings);
+      List<JsonNode> searchItems = discover(channel, key, cursor, currentSettings);
       List<String> ids = new ArrayList<>();
       String newestPublished = cursor;
       for (JsonNode item : searchItems) {
@@ -125,14 +151,14 @@ public class YouTubeSyncService {
       // explicitly mark it unavailable instead of presenting it as playable.
       markMissingAsUnavailable(channel, ids, returned);
 
-      String successAt = Database.now();
+      String successAt = now();
       updateChannelSuccess(channel, successAt, newestPublished);
       markSubscriptionsSynced(channel, successAt);
       linkEnabledSubscribers(channel);
-      prefetchNewest(channel, settings);
+      prefetchNewest(channel, currentSettings);
       return count;
     } catch (Exception failure) {
-      markChannelFailure(channel, Database.now(), safeError(failure));
+      markChannelFailure(channel, now(), safeError(failure));
       throw failure;
     }
   }
@@ -143,10 +169,10 @@ public class YouTubeSyncService {
     try { limit = Math.max(0, Math.min(1000, Integer.parseInt(settings.getOrDefault("newest_videos_to_download", "0")))); }
     catch (NumberFormatException ignored) { return; }
     if (limit == 0) return;
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "SELECT video_id FROM videos WHERE channel_id=? AND availability='AVAILABLE' ORDER BY published_at DESC LIMIT ?")) {
-      p.setString(1, channel); p.setInt(2, limit);
-      try (ResultSet r = p.executeQuery()) { while (r.next()) filler.enqueue(r.getString(1)); }
+    try {
+      videos.findByChannelIdAndAvailabilityOrderByPublishedAtDesc(
+          channel, "AVAILABLE", PageRequest.of(0, limit))
+          .forEach(video -> filler.enqueue(video.getVideoId()));
     } catch (Exception ignored) {
       // Prefetch must never fail metadata synchronization or interactive playback.
     }
@@ -157,68 +183,34 @@ public class YouTubeSyncService {
    * records/files. Canonical metadata and shared media cache are retained.
    */
   public boolean removeSubscription(long userId, long subscriptionId) throws Exception {
-    List<Path> paths = new ArrayList<>();
-    Path userRoot;
-    boolean deleted;
-    try (Connection c = db.open()) {
-      c.setAutoCommit(false);
-      try {
-        String channel;
-        String slug;
-        try (PreparedStatement p = c.prepareStatement(
-            "SELECT s.channel_id,u.filesystem_slug FROM youtube_subscriptions s "
-                + "JOIN users u ON u.id=s.user_id WHERE s.id=? AND s.user_id=?")) {
-          p.setLong(1, subscriptionId);
-          p.setLong(2, userId);
-          try (ResultSet r = p.executeQuery()) {
-            if (!r.next()) {
-              c.rollback();
-              return false;
-            }
-            channel = r.getString(1);
-            slug = r.getString(2);
-          }
-        }
-        userRoot = db.usersRoot.resolve(slug).toAbsolutePath().normalize();
-        try (PreparedStatement p = c.prepareStatement(
-            "SELECT uv.library_path FROM user_videos uv JOIN videos v ON v.video_id=uv.video_id "
-                + "WHERE uv.user_id=? AND v.channel_id=?")) {
-          p.setLong(1, userId);
-          p.setString(2, channel);
-          try (ResultSet r = p.executeQuery()) {
-            while (r.next()) {
-              Path candidate = Path.of(r.getString(1)).toAbsolutePath().normalize();
-              if (candidate.startsWith(userRoot) && !candidate.equals(userRoot)) paths.add(candidate);
-            }
-          }
-        }
-        try (PreparedStatement p = c.prepareStatement(
-            "DELETE FROM user_videos WHERE user_id=? AND video_id IN "
-                + "(SELECT video_id FROM videos WHERE channel_id=?)")) {
-          p.setLong(1, userId);
-          p.setString(2, channel);
-          p.executeUpdate();
-        }
-        try (PreparedStatement p = c.prepareStatement(
-            "DELETE FROM youtube_subscriptions WHERE id=? AND user_id=?")) {
-          p.setLong(1, subscriptionId);
-          p.setLong(2, userId);
-          deleted = p.executeUpdate() == 1;
-        }
-        if (deleted) c.commit(); else c.rollback();
-      } catch (Exception e) {
-        try { c.rollback(); } catch (SQLException ignored) { }
-        throw e;
-      } finally {
-        try { c.setAutoCommit(true); } catch (SQLException ignored) { }
+    YouTubeSubscriptionEntity subscription = subscriptions.findByIdAndUserId(subscriptionId, userId).orElse(null);
+    if (subscription == null) return false;
+    UserEntity user = users.findById(userId).orElse(null);
+    if (user == null) return false;
+
+    String channel = subscription.getChannelId();
+    Path userRoot = paths.usersRoot.resolve(user.getFilesystemSlug()).toAbsolutePath().normalize();
+    List<String> videoIds = videos.findByChannelIdOrderByPublishedAtDesc(channel).stream()
+        .map(VideoEntity::getVideoId)
+        .toList();
+    List<Path> libraryPaths = new ArrayList<>();
+    if (!videoIds.isEmpty()) {
+      List<UserVideoEntity> links = userVideos.findAllById(
+          videoIds.stream().map(video -> new UserVideoId(userId, video)).toList());
+      for (UserVideoEntity link : links) {
+        String storedPath = link.getLibraryPath();
+        if (storedPath == null) continue;
+        Path candidate = Path.of(storedPath).toAbsolutePath().normalize();
+        if (candidate.startsWith(userRoot) && !candidate.equals(userRoot)) libraryPaths.add(candidate);
       }
+      userVideos.deleteAllInBatch(links);
     }
-    if (deleted) {
-      // Delete after commit so filesystem errors cannot leave database locks.
-      for (Path path : paths) deleteTreeSafely(path, userRoot);
-      for (Path path : paths) deleteIfEmpty(path.getParent(), userRoot);
-    }
-    return deleted;
+    subscriptions.delete(subscription);
+
+    // Delete after repository writes so filesystem errors cannot leave database locks.
+    for (Path path : libraryPaths) deleteTreeSafely(path, userRoot);
+    for (Path path : libraryPaths) deleteIfEmpty(path.getParent(), userRoot);
+    return true;
   }
 
   private List<JsonNode> discover(String channel, String key, String cursor,
@@ -249,75 +241,59 @@ public class YouTubeSyncService {
     return items;
   }
 
-  private String channelCursor(String channel) throws SQLException {
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "SELECT last_sync_published_at FROM youtube_channels WHERE channel_id=?")) {
-      p.setString(1, channel);
-      try (ResultSet r = p.executeQuery()) {
-        if (!r.next()) throw new IllegalArgumentException("unknown YouTube channel " + channel);
-        return r.getString(1);
-      }
-    }
+  private String channelCursor(String channel) {
+    return channels.findById(channel)
+        .map(YouTubeChannelEntity::getLastSyncPublishedAt)
+        .orElseThrow(() -> new IllegalArgumentException("unknown YouTube channel " + channel));
   }
 
-  private void markChannelAttempt(String channel, String at) throws SQLException {
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "UPDATE youtube_channels SET last_sync_at=?,sync_error=NULL WHERE channel_id=?")) {
-      p.setString(1, at);
-      p.setString(2, channel);
-      if (p.executeUpdate() == 0) throw new IllegalArgumentException("unknown YouTube channel " + channel);
-    }
+  private void markChannelAttempt(String channel, String at) {
+    YouTubeChannelEntity entity = channels.findById(channel)
+        .orElseThrow(() -> new IllegalArgumentException("unknown YouTube channel " + channel));
+    entity.setLastSyncAt(at);
+    entity.setSyncError(null);
+    channels.save(entity);
   }
 
-  private void updateChannelSuccess(String channel, String at, String cursor) throws SQLException {
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "UPDATE youtube_channels SET last_sync_at=?,last_successful_sync_at=?,last_sync_published_at=?,sync_error=NULL WHERE channel_id=?")) {
-      p.setString(1, at);
-      p.setString(2, at);
-      if (cursor == null || cursor.isBlank()) p.setNull(3, java.sql.Types.VARCHAR); else p.setString(3, cursor);
-      p.setString(4, channel);
-      p.executeUpdate();
-    }
+  private void updateChannelSuccess(String channel, String at, String cursor) {
+    YouTubeChannelEntity entity = channels.findById(channel).orElse(null);
+    if (entity == null) return;
+    entity.setLastSyncAt(at);
+    entity.setLastSuccessfulSyncAt(at);
+    entity.setLastSyncPublishedAt(cursor == null || cursor.isBlank() ? null : cursor);
+    entity.setSyncError(null);
+    channels.save(entity);
   }
 
   private void markChannelFailure(String channel, String at, String error) {
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "UPDATE youtube_channels SET last_sync_at=?,sync_error=? WHERE channel_id=?")) {
-      p.setString(1, at);
-      p.setString(2, error);
-      p.setString(3, channel);
-      p.executeUpdate();
+    try {
+      YouTubeChannelEntity entity = channels.findById(channel).orElse(null);
+      if (entity == null) return;
+      entity.setLastSyncAt(at);
+      entity.setSyncError(error);
+      channels.save(entity);
     } catch (Exception ignored) { }
   }
 
-  private void markSubscriptionsSynced(String channel, String at) throws SQLException {
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "UPDATE youtube_subscriptions SET last_checked_at=?,last_successful_sync_at=? WHERE channel_id=? AND enabled=1")) {
-      p.setString(1, at);
-      p.setString(2, at);
-      p.setString(3, channel);
-      p.executeUpdate();
-    }
+  private void markSubscriptionsSynced(String channel, String at) {
+    List<YouTubeSubscriptionEntity> entities = subscriptions.findByChannelIdAndEnabled(channel, 1);
+    entities.forEach(entity -> {
+      entity.setLastCheckedAt(at);
+      entity.setLastSuccessfulSyncAt(at);
+    });
+    if (!entities.isEmpty()) subscriptions.saveAll(entities);
   }
 
   private void linkEnabledSubscribers(String channel) throws Exception {
-    List<Long> users = new ArrayList<>();
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "SELECT user_id FROM youtube_subscriptions WHERE channel_id=? AND enabled=1")) {
-      p.setString(1, channel);
-      try (ResultSet r = p.executeQuery()) { while (r.next()) users.add(r.getLong(1)); }
+    for (YouTubeSubscriptionEntity subscription : subscriptions.findByChannelIdAndEnabled(channel, 1)) {
+      linkExistingVideos(channel, subscription.getUserId());
     }
-    for (long user : users) linkExistingVideos(channel, user);
   }
 
   private void linkExistingVideos(String channel, long user) throws Exception {
-    List<String> videos = new ArrayList<>();
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "SELECT video_id FROM videos WHERE channel_id=? ORDER BY published_at DESC")) {
-      p.setString(1, channel);
-      try (ResultSet r = p.executeQuery()) { while (r.next()) videos.add(r.getString(1)); }
+    for (VideoEntity video : videos.findByChannelIdOrderByPublishedAtDesc(channel)) {
+      linkStoredVideo(user, video.getVideoId());
     }
-    for (String video : videos) linkStoredVideo(user, video);
   }
 
   private void upsertVideo(JsonNode video, String channel) throws Exception {
@@ -325,90 +301,47 @@ public class YouTubeSyncService {
     JsonNode snippet = video.path("snippet");
     int duration = duration(video.path("contentDetails").path("duration").asText());
     String availability = availability(video.path("status"));
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "MERGE INTO videos(video_id,channel_id,title,description,published_at,duration_seconds,is_short,thumbnail_url,availability,metadata_updated_at) KEY(video_id) VALUES(?,?,?,?,?,?,?,?,?,?)")) {
-      p.setString(1, id);
-      p.setString(2, channel);
-      p.setString(3, snippet.path("title").asText(""));
-      p.setString(4, snippet.path("description").asText(""));
-      p.setString(5, snippet.path("publishedAt").asText(""));
-      p.setInt(6, duration);
-      p.setInt(7, isShort(video, duration) ? 1 : 0);
-      p.setString(8, thumbnail(snippet));
-      p.setString(9, availability);
-      p.setString(10, Database.now());
-      p.executeUpdate();
-    }
+    VideoEntity entity = videos.findById(id).orElseGet(() -> new VideoEntity(
+        id, channel, "", "", null, 0, 0, "", "AVAILABLE", now()));
+    entity.setChannelId(channel);
+    entity.setTitle(snippet.path("title").asText(""));
+    entity.setDescription(snippet.path("description").asText(""));
+    entity.setPublishedAt(snippet.path("publishedAt").asText(""));
+    entity.setDurationSeconds(duration);
+    entity.setIsShort(isShort(video, duration) ? 1 : 0);
+    entity.setThumbnailUrl(thumbnail(snippet));
+    entity.setAvailability(availability);
+    entity.setMetadataUpdatedAt(now());
+    videos.save(entity);
   }
 
-  private void markMissingAsUnavailable(String channel, List<String> ids, Set<String> returned) throws SQLException {
+  private void markMissingAsUnavailable(String channel, List<String> ids, Set<String> returned) {
     if (ids.isEmpty()) return;
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "UPDATE videos SET availability='UNAVAILABLE',metadata_updated_at=? WHERE video_id=? AND channel_id=?")) {
-      for (String id : ids) {
-        if (returned.contains(id)) continue;
-        p.setString(1, Database.now());
-        p.setString(2, id);
-        p.setString(3, channel);
-        p.addBatch();
-      }
-      p.executeBatch();
-    }
+    List<VideoEntity> entities = videos.findByChannelIdAndVideoIdIn(channel, ids);
+    entities.removeIf(entity -> returned.contains(entity.getVideoId()));
+    entities.forEach(entity -> {
+      entity.setAvailability("UNAVAILABLE");
+      entity.setMetadataUpdatedAt(now());
+    });
+    if (!entities.isEmpty()) videos.saveAll(entities);
   }
 
-  private List<String> staleVideoIds(String channel) throws SQLException {
+  private List<String> staleVideoIds(String channel) {
     String cutoff = Instant.now().minusSeconds(24 * 60 * 60L).toString();
-    List<String> ids = new ArrayList<>();
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "SELECT video_id FROM videos WHERE channel_id=? AND (metadata_updated_at IS NULL OR metadata_updated_at<?) "
-            + "ORDER BY metadata_updated_at LIMIT 50")) {
-      p.setString(1, channel);
-      p.setString(2, cutoff);
-      try (ResultSet r = p.executeQuery()) { while (r.next()) ids.add(r.getString(1)); }
-    }
-    return ids;
+    return videos.findStaleVideoIds(channel, cutoff, PageRequest.of(0, 50));
   }
 
   /** Link one canonical metadata row into one user's isolated Jellyfin tree. */
   private void linkStoredVideo(long user, String video) throws Exception {
-    String channel;
-    String title;
-    String description;
-    String published;
-    int duration;
-    String thumbnail;
-    String availability;
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "SELECT v.channel_id,v.title,v.description,v.published_at,v.duration_seconds,v.thumbnail_url,v.availability "
-            + "FROM videos v JOIN youtube_subscriptions s ON s.channel_id=v.channel_id "
-            + "WHERE v.video_id=? AND s.user_id=? AND s.enabled=1")) {
-      p.setString(1, video);
-      p.setLong(2, user);
-      try (ResultSet r = p.executeQuery()) {
-        if (!r.next()) return;
-        channel = r.getString(1);
-        title = r.getString(2);
-        description = r.getString(3);
-        published = r.getString(4);
-        duration = r.getInt(5);
-        thumbnail = r.getString(6);
-        availability = r.getString(7);
-      }
-    }
-    String name;
-    String slug;
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "SELECT u.filesystem_slug,c.name FROM users u JOIN youtube_subscriptions s ON s.user_id=u.id "
-            + "JOIN youtube_channels c ON c.channel_id=s.channel_id WHERE u.id=? AND s.channel_id=? AND s.enabled=1")) {
-      p.setLong(1, user);
-      p.setString(2, channel);
-      try (ResultSet r = p.executeQuery()) {
-        if (!r.next()) return;
-        slug = r.getString(1);
-        name = r.getString(2);
-      }
-    }
-    writeLibrary(user, slug, name, channel, video, title, description, published, duration, thumbnail, availability);
+    VideoEntity entity = videos.findById(video).orElse(null);
+    if (entity == null) return;
+    if (subscriptions.findByUserIdAndChannelIdAndEnabled(user, entity.getChannelId(), 1).isEmpty()) return;
+    UserEntity userEntity = users.findById(user).orElse(null);
+    YouTubeChannelEntity channelEntity = channels.findById(entity.getChannelId()).orElse(null);
+    if (userEntity == null || channelEntity == null) return;
+    writeLibrary(user, userEntity.getFilesystemSlug(), channelEntity.getName(), entity.getChannelId(),
+        video, entity.getTitle(), entity.getDescription(), entity.getPublishedAt(),
+        entity.getDurationSeconds(), entity.getThumbnailUrl(), entity.getAvailability());
   }
 
   // Compatibility wrapper for callers from older builds.
@@ -420,22 +353,16 @@ public class YouTubeSyncService {
   private void writeLibrary(long user, String slug, String channelName, String channel, String video,
                             String title, String description, String published, int duration,
                             String thumbnail, String availability) throws Exception {
-    Path root = db.usersRoot.resolve(slug).toAbsolutePath().normalize();
-    if (!root.startsWith(db.usersRoot.toAbsolutePath().normalize()))
+    Path root = paths.usersRoot.resolve(slug).toAbsolutePath().normalize();
+    if (!root.startsWith(paths.usersRoot.toAbsolutePath().normalize()))
       throw new SecurityException("invalid user filesystem root");
     Path path = root.resolve(clean(channelName) + " [" + clean(channel) + "]").resolve(video).normalize();
     if (!path.startsWith(root) || path.equals(root)) throw new SecurityException("invalid library path");
     Files.createDirectories(path);
-    String token;
-    try (Connection c = db.open(); PreparedStatement q = c.prepareStatement(
-        "SELECT playback_token FROM user_videos WHERE user_id=? AND video_id=?")) {
-      q.setLong(1, user);
-      q.setString(2, video);
-      try (ResultSet r = q.executeQuery()) {
-        token = r.next() ? r.getString(1) : UUID.randomUUID().toString().replace("-", "");
-      }
-    }
-    String base = db.settings(false).getOrDefault("public_base_url", "http://localhost:8080");
+    UserVideoId linkId = new UserVideoId(user, video);
+    UserVideoEntity link = userVideos.findById(linkId).orElse(null);
+    String token = link == null ? UUID.randomUUID().toString().replace("-", "") : link.getPlaybackToken();
+    String base = settings().getOrDefault("public_base_url", "http://localhost:8080");
     Files.writeString(path.resolve("video.strm"), base + "/play/" + video + "?token=" + token + "\n");
     String date = published == null ? "" : published.length() >= 10 ? published.substring(0, 10) : published;
     String nfo = "<movie><title>" + xml(title) + "</title><plot>" + xml(description) + "</plot><studio>"
@@ -444,13 +371,12 @@ public class YouTubeSyncService {
         + "</premiered><tagline>" + xml(availability) + "</tagline></movie>";
     Files.writeString(path.resolve("video.nfo"), nfo);
     downloadThumbnail(thumbnail, path.resolve("video-thumb.jpg"));
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "UPDATE user_videos SET library_path=? WHERE user_id=? AND video_id=?")) {
-      p.setString(1,path.toString()); p.setLong(2,user); p.setString(3,video);
-      if (p.executeUpdate()==0) try (PreparedStatement i=c.prepareStatement("INSERT INTO user_videos(user_id,video_id,library_path,playback_token,created_at) VALUES(?,?,?,?,?)")) {
-        i.setLong(1,user); i.setString(2,video); i.setString(3,path.toString()); i.setString(4,token); i.setString(5,Database.now()); i.executeUpdate();
-      }
+    if (link == null) {
+      link = new UserVideoEntity(linkId, path.toString(), token, now());
+    } else {
+      link.setLibraryPath(path.toString());
     }
+    userVideos.save(link);
     jellyfin.afterLibraryGeneration(video, path, duration);
   }
 
@@ -477,6 +403,14 @@ public class YouTubeSyncService {
     if (response.statusCode() / 100 != 2)
       throw new IllegalStateException("YouTube Data API status " + response.statusCode());
     return json.readTree(response.body());
+  }
+
+  private Map<String, String> settings() {
+    return settings.values(false);
+  }
+
+  private static String now() {
+    return ApplicationClock.now();
   }
 
   private static String availability(JsonNode status) {

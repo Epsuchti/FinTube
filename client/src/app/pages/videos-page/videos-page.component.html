@@ -1,0 +1,8 @@
+<div class="page-heading"><div><p class="eyebrow">LOCAL METADATA</p><h1>Your videos</h1><p class="muted">Metadata is supplied by FinTube. Playback remains behind a stable backend URL.</p></div><span class="count-pill">{{ videos().length }} videos</span></div>
+@if (error()) {<div class="toast toast-error" role="alert">{{ error() }}<button type="button" aria-label="Dismiss" (click)="error.set('')">×</button></div>}
+@if (notice()) {<div class="toast" role="status">{{ notice() }}<button type="button" aria-label="Dismiss" (click)="notice.set('')">×</button></div>}
+<div class="card-grid video-grid">
+  @for (video of videos(); track video.video_id) {
+    <article class="video-card"><div class="video-art"><span>▶</span></div><div class="video-content"><h3>{{ video.title }}</h3><p class="muted">{{ video.channel || 'Unknown channel' }} · {{ formatDuration(video.duration_seconds) }}</p><p class="muted small">{{ video.published_at ? (video.published_at | date:'mediumDate') : 'Publication date unavailable' }}</p><div class="card-actions"><a class="button primary" [href]="playbackUrl(video)" target="_blank" rel="noopener">Play</a><button type="button" (click)="manageChannels.emit()">Manage channel</button></div></div></article>
+  } @empty { <div class="empty-state"><div class="empty-icon">▶</div><h3>Your library is empty</h3><p class="muted">Refresh an enabled subscription to discover videos.</p></div> }
+</div>

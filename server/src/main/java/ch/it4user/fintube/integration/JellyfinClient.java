@@ -1,6 +1,6 @@
 package ch.it4user.fintube.integration;
 
-import ch.it4user.fintube.core.Database;
+import ch.it4user.fintube.core.SettingsService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -33,17 +33,17 @@ public class JellyfinClient {
   private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
   private static final long TICKS_PER_SECOND = 10_000_000L;
 
-  final Database db;
+  final SettingsService settings;
   final ObjectMapper json;
   final HttpClient http;
 
   @Autowired
-  public JellyfinClient(Database db) {
-    this(db, new ObjectMapper(), HttpClient.newBuilder().connectTimeout(DEFAULT_TIMEOUT).build());
+  public JellyfinClient(SettingsService settings) {
+    this(settings, new ObjectMapper(), HttpClient.newBuilder().connectTimeout(DEFAULT_TIMEOUT).build());
   }
 
-  JellyfinClient(Database db, ObjectMapper json, HttpClient http) {
-    this.db = db;
+  JellyfinClient(SettingsService settings, ObjectMapper json, HttpClient http) {
+    this.settings = settings;
     this.json = json;
     this.http = http;
   }
@@ -63,7 +63,7 @@ public class JellyfinClient {
 
   public Configuration configuration() {
     try {
-      Map<String, String> s = db.settings(false);
+      Map<String, String> s = settings();
       String rawUrl = s.getOrDefault("jellyfin_url", "").trim();
       String baseUrl = normalizeBaseUrl(rawUrl);
       boolean enabled = parseBoolean(s.getOrDefault("jellyfin_enabled", "false"), !baseUrl.isBlank());
@@ -234,8 +234,12 @@ public class JellyfinClient {
   }
 
   private String apiKey() {
-    try { return db.settings(false).getOrDefault("jellyfin_api_key", ""); }
-    catch (Exception e) { return ""; }
+    return settings().getOrDefault("jellyfin_api_key", "");
+  }
+
+  private Map<String, String> settings() {
+    try { return settings.values(false); }
+    catch (Exception e) { return Map.of(); }
   }
 
   public static String normalizeBaseUrl(String raw) {

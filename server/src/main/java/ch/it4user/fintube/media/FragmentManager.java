@@ -1,6 +1,12 @@
 package ch.it4user.fintube.media;
 
-import ch.it4user.fintube.core.Database;
+import ch.it4user.fintube.core.ApplicationPaths;
+import ch.it4user.fintube.core.SettingsService;
+import ch.it4user.fintube.persistence.entities.CacheEntryEntity;
+import ch.it4user.fintube.persistence.repositories.CacheEntryRepository;
+import ch.it4user.fintube.persistence.entities.CachedFragmentEntity;
+import ch.it4user.fintube.persistence.entities.CachedFragmentId;
+import ch.it4user.fintube.persistence.repositories.CachedFragmentRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -14,10 +20,6 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -32,7 +34,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class FragmentManager {
   /** Coordinates lease acquisition with maintenance's check-and-unlink step. */
   public static final Object EVICTION_LOCK = new Object();
-  final Database db;
+  final ApplicationPaths paths;
+  final SettingsService settingsService;
+  final CacheEntryRepository cacheEntries;
+  final CachedFragmentRepository cachedFragments;
   final HttpClient http;
   /** One upstream operation per logical fragment. A low-priority operation can
    * be promoted by a foreground waiter without starting a second request. */
@@ -48,12 +53,19 @@ public class FragmentManager {
   }
 
   @Autowired
-  public FragmentManager(Database db) {
-    this(db, HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build());
+  public FragmentManager(ApplicationPaths paths, SettingsService settingsService,
+                         CacheEntryRepository cacheEntries, CachedFragmentRepository cachedFragments) {
+    this(paths, settingsService, cacheEntries, cachedFragments,
+        HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build());
   }
 
-  FragmentManager(Database db, HttpClient http) {
-    this.db = db;
+  FragmentManager(ApplicationPaths paths, SettingsService settingsService,
+                  CacheEntryRepository cacheEntries, CachedFragmentRepository cachedFragments,
+                  HttpClient http) {
+    this.paths = paths;
+    this.settingsService = settingsService;
+    this.cacheEntries = cacheEntries;
+    this.cachedFragments = cachedFragments;
     this.http = http;
   }
 
@@ -167,50 +179,37 @@ public class FragmentManager {
   }
 
   /** Mark a format complete when all expected fragments have been published. */
-  public void markComplete(String video, String format, int expectedFragments) throws SQLException {
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "SELECT COUNT(*) FROM cached_fragments WHERE video_id=? AND format_key=? AND completed=1")) {
-      p.setString(1, video); p.setString(2, format);
-      try (ResultSet r = p.executeQuery()) {
-        if (r.next() && expectedFragments > 0 && r.getInt(1) >= expectedFragments) {
-          try (PreparedStatement u = c.prepareStatement("UPDATE cache_entries SET status='COMPLETE',completed_at=?,last_accessed_at=? WHERE video_id=?")) {
-            u.setString(1, Database.now()); u.setString(2, Database.now()); u.setString(3, video); u.executeUpdate();
-          }
-        }
-      }
+  public void markComplete(String video, String format, int expectedFragments) {
+    long completed = cachedFragments.countCompleted(video, format);
+    if (expectedFragments > 0 && completed >= expectedFragments) {
+      String now = now();
+      cacheEntries.markComplete(video, now, now);
     }
   }
 
-  public boolean isCached(String video, String format, String fragment) throws SQLException {
+  public boolean isCached(String video, String format, String fragment) {
     return cached(video, format, fragment) != null;
   }
 
-  private Path cached(String video, String format, String fragment) throws SQLException {
-    Path result = null;
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "SELECT path FROM cached_fragments WHERE video_id=? AND format_key=? AND fragment_id=? AND completed=1")) {
-      p.setString(1, video); p.setString(2, format); p.setString(3, fragment);
-      try (ResultSet r = p.executeQuery()) {
-        if (!r.next()) return null;
-        result = Path.of(r.getString(1));
-        if (!Files.isRegularFile(result) || Files.size(result) == 0) {
-          try (PreparedStatement d = c.prepareStatement("DELETE FROM cached_fragments WHERE video_id=? AND format_key=? AND fragment_id=?")) {
-            d.setString(1, video); d.setString(2, format); d.setString(3, fragment); d.executeUpdate();
-          }
-          return null;
-        }
-      } catch (IOException e) {
+  private Path cached(String video, String format, String fragment) {
+    CachedFragmentEntity entity = cachedFragments.findById(new CachedFragmentId(video, format, fragment)).orElse(null);
+    if (entity == null || entity.getCompleted() == 0) return null;
+    Path result = Path.of(entity.getPath());
+    try {
+      if (!Files.isRegularFile(result) || Files.size(result) == 0) {
+        cachedFragments.deleteFragment(video, format, fragment);
         return null;
       }
+    } catch (IOException e) {
+      return null;
     }
-    // Close the SELECT connection/cursor before opening the independent touch
-    // update connection to keep cache reads and writes short-lived.
+    // Keep cache reads and the independent touch update short-lived.
     touch(video, format, fragment);
     return result;
   }
 
   private Path target(String video, String format, String fragment) {
-    return db.cacheRoot.resolve(safe(video)).resolve(safe(format)).resolve(safe(fragment) + ".part");
+    return paths.cacheRoot.resolve(safe(video)).resolve(safe(format)).resolve(safe(fragment) + ".part");
   }
 
   private static Path temporary(Path target) {
@@ -265,8 +264,7 @@ public class FragmentManager {
   /** Apply the configured low-priority bandwidth limit while reading. */
   private void paceBackground(long bytes, long started, Inflight owner) throws InterruptedException {
     try {
-      double mbps = Double.parseDouble(db.settings(false)
-          .getOrDefault("background_download_max_mbps", "75"));
+      double mbps = Double.parseDouble(setting("background_download_max_mbps", "75"));
       if (mbps <= 0 || bytes <= 0) return;
       long minimum = (long) (bytes * 8_000_000_000d / (mbps * 1_000_000d));
       long wait = minimum - (System.nanoTime() - started);
@@ -275,16 +273,14 @@ public class FragmentManager {
         Thread.sleep(slice / 1_000_000, (int) (slice % 1_000_000));
         wait = minimum - (System.nanoTime() - started);
       }
-    } catch (NumberFormatException | SQLException ignored) {
+    } catch (NumberFormatException ignored) {
       // Settings are validated at the API boundary; retain a safe fallback if
       // a legacy database contains an invalid value.
     }
   }
 
   private Path remux(Path video, Path audio, Path output) throws Exception {
-    String ffmpeg;
-    try { ffmpeg = db.settings(false).getOrDefault("ffmpeg_path", "ffmpeg"); }
-    catch (SQLException e) { ffmpeg = "ffmpeg"; }
+    String ffmpeg = setting("ffmpeg_path", "ffmpeg");
     Process process = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-i", video.toString(),
         "-i", audio.toString(), "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-f", "mpegts", "-y", output.toString())
         .redirectErrorStream(true).start();
@@ -294,47 +290,62 @@ public class FragmentManager {
     return output;
   }
 
-  private void upsert(String video, String format, String fragment, Path path) throws SQLException, IOException {
-    String now = Database.now();
-    try (Connection c = db.open(); PreparedStatement e = c.prepareStatement(
-        "UPDATE cache_entries SET format_key=?,status=CASE WHEN status='COMPLETE' THEN status ELSE 'PARTIAL' END,last_accessed_at=? WHERE video_id=?")) {
-      e.setString(1, format); e.setString(2, now); e.setString(3, video);
-      if (e.executeUpdate()==0) try (PreparedStatement i=c.prepareStatement("INSERT INTO cache_entries(video_id,format_key,status,last_accessed_at,active_readers,active_writers) VALUES(?,?, 'PARTIAL',?,0,0)")) { i.setString(1,video); i.setString(2,format); i.setString(3,now); i.executeUpdate(); }
-    }
-    try (Connection c = db.open(); PreparedStatement x = c.prepareStatement(
-        "MERGE INTO cached_fragments(video_id,format_key,fragment_id,path,size_bytes,completed,last_accessed_at) KEY(video_id,format_key,fragment_id) VALUES(?,?,?,?,?,?,?)")) {
-      x.setString(1, video); x.setString(2, format); x.setString(3, fragment); x.setString(4, path.toString());
-      x.setLong(5, Files.size(path)); x.setInt(6, 1); x.setString(7, now); x.executeUpdate();
-    }
-  }
-
-  private void touch(String video, String format, String fragment) throws SQLException {
-    String now = Database.now();
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "UPDATE cached_fragments SET last_accessed_at=? WHERE video_id=? AND format_key=? AND fragment_id=?")) {
-      p.setString(1, now); p.setString(2, video); p.setString(3, format); p.setString(4, fragment); p.executeUpdate();
-    }
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement("UPDATE cache_entries SET last_accessed_at=? WHERE video_id=?")) {
-      p.setString(1, now); p.setString(2, video); p.executeUpdate();
-    }
-  }
-
-  private void markActive(String video, String format, int writers, int readers) throws SQLException {
+  private void upsert(String video, String format, String fragment, Path path) throws IOException {
+    String now = now();
     synchronized (EVICTION_LOCK) {
-      try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-          "UPDATE cache_entries SET format_key=?,active_readers=GREATEST(0,active_readers+?),active_writers=GREATEST(0,active_writers+?),last_accessed_at=? WHERE video_id=?")) {
-        p.setString(1, format); p.setInt(2, readers); p.setInt(3, writers); p.setString(4, Database.now()); p.setString(5, video);
-        if (p.executeUpdate()==0) try (PreparedStatement i=c.prepareStatement("INSERT INTO cache_entries(video_id,format_key,status,last_accessed_at,active_readers,active_writers) VALUES(?,?, 'PARTIAL',?,?,?)")) { i.setString(1,video); i.setString(2,format); i.setString(3,Database.now()); i.setInt(4,Math.max(readers,0)); i.setInt(5,Math.max(writers,0)); i.executeUpdate(); }
+      CacheEntryEntity entry = cacheEntries.findById(video).orElse(null);
+      if (entry == null) {
+        entry = new CacheEntryEntity(video, format, "PARTIAL", now, 0, 0, null);
+      } else {
+        entry.setFormatKey(format);
+        if (!"COMPLETE".equals(entry.getStatus())) entry.setStatus("PARTIAL");
+        entry.setLastAccessedAt(now);
       }
+      cacheEntries.save(entry);
+      CachedFragmentEntity cached = new CachedFragmentEntity(
+          new CachedFragmentId(video, format, fragment), path.toString(), Files.size(path), 1, now);
+      cachedFragments.save(cached);
+    }
+  }
+
+  private void touch(String video, String format, String fragment) {
+    String now = now();
+    cachedFragments.touch(video, format, fragment, now);
+    cacheEntries.touch(video, now);
+  }
+
+  private void markActive(String video, String format, int writers, int readers) {
+    synchronized (EVICTION_LOCK) {
+      String now = now();
+      CacheEntryEntity entry = cacheEntries.findById(video).orElse(null);
+      if (entry == null) {
+        entry = new CacheEntryEntity(video, format, "PARTIAL", now,
+            Math.max(readers, 0), Math.max(writers, 0), null);
+      } else {
+        entry.setFormatKey(format);
+        entry.setActiveReaders(Math.max(0, entry.getActiveReaders() + readers));
+        entry.setActiveWriters(Math.max(0, entry.getActiveWriters() + writers));
+        entry.setLastAccessedAt(now);
+      }
+      cacheEntries.save(entry);
     }
   }
 
   private void markActiveQuietly(String video, String format, int writers, int readers) {
-    try { markActive(video, format, writers, readers); } catch (SQLException ignored) { }
+    try { markActive(video, format, writers, readers); } catch (RuntimeException ignored) { }
   }
 
   private void waitForInteractive() throws InterruptedException {
     awaitForegroundTurn();
+  }
+
+  private String setting(String key, String fallback) {
+    String value = settingsService.value(key);
+    return value == null ? fallback : value;
+  }
+
+  private static String now() {
+    return java.time.Instant.now().toString();
   }
 
   private static String key(String video, String format, String fragment) { return video + "/" + format + "/" + fragment; }

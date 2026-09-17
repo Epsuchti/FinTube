@@ -1,7 +1,15 @@
 package ch.it4user.fintube.web;
 
-import ch.it4user.fintube.core.Database;
+import ch.it4user.fintube.core.ApplicationClock;
+import ch.it4user.fintube.core.ApplicationPaths;
 import ch.it4user.fintube.core.SettingsPolicy;
+import ch.it4user.fintube.core.SettingsService;
+import ch.it4user.fintube.persistence.entities.UserEntity;
+import ch.it4user.fintube.persistence.repositories.UserRepository;
+import ch.it4user.fintube.persistence.entities.YouTubeChannelEntity;
+import ch.it4user.fintube.persistence.repositories.YouTubeChannelRepository;
+import ch.it4user.fintube.persistence.entities.YouTubeSubscriptionEntity;
+import ch.it4user.fintube.persistence.repositories.YouTubeSubscriptionRepository;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,8 +23,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.io.IOException;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
+import java.util.Comparator;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,7 +45,11 @@ class OwnershipIsolationTest {
     private static final Path TEST_DATA_DIR = dataDirectory();
 
     @Autowired MockMvc mvc;
-    @Autowired Database database;
+    @Autowired ApplicationPaths paths;
+    @Autowired UserRepository users;
+    @Autowired YouTubeChannelRepository channels;
+    @Autowired YouTubeSubscriptionRepository subscriptions;
+    @Autowired SettingsService settings;
 
     @DynamicPropertySource
     static void dataProperties(DynamicPropertyRegistry registry) {
@@ -51,17 +62,12 @@ class OwnershipIsolationTest {
         Cookie session = register(username, "correct horse battery staple");
 
         assertThat(session.getValue()).isNotBlank();
-        try (var c = database.open(); var p = c.prepareStatement("SELECT password_hash,filesystem_slug FROM users WHERE username=?")) {
-            p.setString(1, username);
-            try (ResultSet result = p.executeQuery()) {
-                assertThat(result.next()).isTrue();
-                assertThat(result.getString("password_hash")).doesNotContain("correct horse battery staple");
-                String slug = result.getString("filesystem_slug");
-                assertThat(slug).matches("[a-z0-9]+(?:-[a-z0-9]+)*");
-                assertThat(Files.isDirectory(database.usersRoot.resolve(slug))).isTrue();
-                assertThat(database.usersRoot.resolve(slug).normalize().startsWith(database.usersRoot.normalize())).isTrue();
-            }
-        }
+        UserEntity user = users.findByUsername(username).orElseThrow();
+        assertThat(user.getPasswordHash()).doesNotContain("correct horse battery staple");
+        String slug = user.getFilesystemSlug();
+        assertThat(slug).matches("[a-z0-9]+(?:-[a-z0-9]+)*");
+        assertThat(Files.isDirectory(paths.usersRoot.resolve(slug))).isTrue();
+        assertThat(paths.usersRoot.resolve(slug).normalize().startsWith(paths.usersRoot.normalize())).isTrue();
 
         mvc.perform(get("/api/subscriptions").cookie(session)).andExpect(status().isOk());
         mvc.perform(get("/api/subscriptions")).andExpect(status().isUnauthorized());
@@ -75,8 +81,8 @@ class OwnershipIsolationTest {
         Cookie ericSession = register(eric, "eric password that is long");
         long aliceId = userId(alice);
         long ericId = userId(eric);
-        seedChannel("UC" + UUID.randomUUID().toString().replace("-", ""), "Shared Channel");
-        String channelId = latestChannelId();
+        String channelId = "UC" + UUID.randomUUID().toString().replace("-", "");
+        seedChannel(channelId, "Shared Channel");
         seedSubscription(aliceId, channelId);
         seedSubscription(ericId, channelId);
         long aliceSubscription = subscriptionId(aliceId);
@@ -109,20 +115,8 @@ class OwnershipIsolationTest {
         seedSubscription(firstId, channelId);
         seedSubscription(secondId, channelId);
 
-        try (var c = database.open(); var p = c.prepareStatement("SELECT count(*) FROM youtube_channels WHERE channel_id=?")) {
-            p.setString(1, channelId);
-            try (ResultSet result = p.executeQuery()) {
-                assertThat(result.next()).isTrue();
-                assertThat(result.getInt(1)).isEqualTo(1);
-            }
-        }
-        try (var c = database.open(); var p = c.prepareStatement("SELECT count(*) FROM youtube_subscriptions WHERE channel_id=?")) {
-            p.setString(1, channelId);
-            try (ResultSet result = p.executeQuery()) {
-                assertThat(result.next()).isTrue();
-                assertThat(result.getInt(1)).isEqualTo(2);
-            }
-        }
+        assertThat(channels.findById(channelId)).isPresent();
+        assertThat(subscriptions.findByChannelIdAndEnabled(channelId, 1)).hasSize(2);
     }
 
     @Test
@@ -140,16 +134,10 @@ class OwnershipIsolationTest {
         String username = unique("administrator");
         Cookie session = register(username, "administrator password long");
         long userId = userId(username);
-        try (var c = database.open(); var role = c.prepareStatement("UPDATE users SET role='ADMIN' WHERE id=?")) {
-            role.setLong(1, userId);
-            role.executeUpdate();
-            try (var secret = c.prepareStatement("MERGE INTO settings(key,value,secret,updated_at) KEY(key) VALUES(?,?,1,?)")) {
-                secret.setString(1, "youtube_api_key");
-                secret.setString(2, "should-not-be-returned");
-                secret.setString(3, Database.now());
-                secret.executeUpdate();
-            }
-        }
+        UserEntity admin = users.findById(userId).orElseThrow();
+        admin.setRole("ADMIN");
+        users.save(admin);
+        settings.save("youtube_api_key", "should-not-be-returned", true);
         mvc.perform(get("/api/admin/settings").cookie(session)).andExpect(status().isOk())
                 .andExpect(result -> assertThat(result.getResponse().getContentAsString()).contains(SettingsPolicy.MASK).doesNotContain("should-not-be-returned"));
         mvc.perform(patch("/api/admin/settings").cookie(session).contentType(APPLICATION_JSON)
@@ -168,59 +156,33 @@ class OwnershipIsolationTest {
     }
 
     private long userId(String username) throws Exception {
-        try (var c = database.open(); var p = c.prepareStatement("SELECT id FROM users WHERE username=?")) {
-            p.setString(1, username);
-            try (ResultSet result = p.executeQuery()) {
-                assertThat(result.next()).isTrue();
-                return result.getLong(1);
-            }
-        }
+        return users.findByUsername(username).orElseThrow().getId();
     }
 
     private void seedChannel(String channelId, String name) throws Exception {
-        try (var c = database.open(); var p = c.prepareStatement("MERGE INTO youtube_channels(channel_id,name,url,updated_at) KEY(channel_id) VALUES(?,?,?,?)")) {
-            p.setString(1, channelId);
-            p.setString(2, name);
-            p.setString(3, "https://www.youtube.com/channel/" + channelId);
-            p.setString(4, Database.now());
-            p.executeUpdate();
-        }
+        YouTubeChannelEntity channel = channels.findById(channelId)
+                .orElseGet(() -> new YouTubeChannelEntity(channelId, name,
+                        "https://www.youtube.com/channel/" + channelId, ApplicationClock.now()));
+        channel.setName(name);
+        channel.setUrl("https://www.youtube.com/channel/" + channelId);
+        channel.setUpdatedAt(ApplicationClock.now());
+        channels.save(channel);
     }
 
     private void seedSubscription(long userId, String channelId) throws Exception {
-        try (var c = database.open(); var p = c.prepareStatement("MERGE INTO youtube_subscriptions(user_id,channel_id,created_at) KEY(user_id,channel_id) VALUES(?,?,?)")) {
-            p.setLong(1, userId);
-            p.setString(2, channelId);
-            p.setString(3, Database.now());
-            p.executeUpdate();
-        }
-    }
-
-    private String latestChannelId() throws Exception {
-        try (var c = database.open(); var p = c.prepareStatement("SELECT channel_id FROM youtube_channels ORDER BY updated_at DESC LIMIT 1"); ResultSet result = p.executeQuery()) {
-            assertThat(result.next()).isTrue();
-            return result.getString(1);
+        if (subscriptions.findByUserIdAndChannelIdAndEnabled(userId, channelId, 1).isEmpty()) {
+            subscriptions.save(new YouTubeSubscriptionEntity(userId, channelId, 1, ApplicationClock.now()));
         }
     }
 
     private long subscriptionId(long userId) throws Exception {
-        try (var c = database.open(); var p = c.prepareStatement("SELECT id FROM youtube_subscriptions WHERE user_id=? ORDER BY id DESC LIMIT 1")) {
-            p.setLong(1, userId);
-            try (ResultSet result = p.executeQuery()) {
-                assertThat(result.next()).isTrue();
-                return result.getLong(1);
-            }
-        }
+        return subscriptions.findAll().stream().filter(value -> value.getUserId() == userId)
+                .max(Comparator.comparing(YouTubeSubscriptionEntity::getId))
+                .orElseThrow().getId();
     }
 
     private long subscriptionOwner(long subscriptionId) throws Exception {
-        try (var c = database.open(); var p = c.prepareStatement("SELECT user_id FROM youtube_subscriptions WHERE id=?")) {
-            p.setLong(1, subscriptionId);
-            try (ResultSet result = p.executeQuery()) {
-                assertThat(result.next()).isTrue();
-                return result.getLong(1);
-            }
-        }
+        return subscriptions.findById(subscriptionId).orElseThrow().getUserId();
     }
 
     private String unique(String prefix) { return prefix + UUID.randomUUID().toString().replace("-", "").substring(0, 12); }

@@ -1,6 +1,19 @@
 package ch.it4user.fintube.web;
 
-import ch.it4user.fintube.core.Database;
+import ch.it4user.fintube.core.ApplicationClock;
+import ch.it4user.fintube.core.ApplicationPaths;
+import ch.it4user.fintube.persistence.entities.CacheEntryEntity;
+import ch.it4user.fintube.persistence.repositories.CacheEntryRepository;
+import ch.it4user.fintube.persistence.repositories.UserRepository;
+import ch.it4user.fintube.persistence.entities.UserVideoEntity;
+import ch.it4user.fintube.persistence.entities.UserVideoId;
+import ch.it4user.fintube.persistence.repositories.UserVideoRepository;
+import ch.it4user.fintube.persistence.entities.VideoEntity;
+import ch.it4user.fintube.persistence.repositories.VideoRepository;
+import ch.it4user.fintube.persistence.entities.YouTubeChannelEntity;
+import ch.it4user.fintube.persistence.repositories.YouTubeChannelRepository;
+import ch.it4user.fintube.persistence.entities.YouTubeSubscriptionEntity;
+import ch.it4user.fintube.persistence.repositories.YouTubeSubscriptionRepository;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -14,7 +27,6 @@ import org.springframework.test.web.servlet.MvcResult;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.sql.ResultSet;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,7 +46,13 @@ class SubscriptionRemovalTest {
     private static final Path TEST_DATA_DIR = dataDirectory();
 
     @Autowired MockMvc mvc;
-    @Autowired Database database;
+    @Autowired ApplicationPaths paths;
+    @Autowired UserRepository users;
+    @Autowired YouTubeChannelRepository channels;
+    @Autowired YouTubeSubscriptionRepository subscriptions;
+    @Autowired VideoRepository videos;
+    @Autowired UserVideoRepository userVideos;
+    @Autowired CacheEntryRepository cacheEntries;
 
     @DynamicPropertySource
     static void dataProperties(DynamicPropertyRegistry registry) {
@@ -65,21 +83,20 @@ class SubscriptionRemovalTest {
         seedUserVideo(ericId, videoId, ericPath);
         seedUserVideo(aliceId, videoId, alicePath);
 
-        Path cached = database.cacheRoot.resolve(videoId).resolve("fragment.bin");
+        Path cached = paths.cacheRoot.resolve(videoId).resolve("fragment.bin");
         Files.createDirectories(cached.getParent());
         Files.writeString(cached, "shared-media");
-        try (var c = database.open(); var p = c.prepareStatement("MERGE INTO cache_entries(video_id,format_key,status,last_accessed_at,active_readers,active_writers) KEY(video_id) VALUES(?,?,?,?,0,0)")) {
-            p.setString(1, videoId); p.setString(2, "137+140"); p.setString(3, "PARTIAL"); p.setString(4, Database.now()); p.executeUpdate();
-        }
+        cacheEntries.save(new CacheEntryEntity(videoId, "137+140", "PARTIAL",
+                ApplicationClock.now(), 0, 0, null));
 
         mvc.perform(delete("/api/subscriptions/" + subscriptionId).cookie(ericSession)).andExpect(status().isOk());
 
         assertThat(Files.exists(ericPath)).isFalse();
         assertThat(Files.exists(alicePath.resolve("video.strm"))).isTrue();
-        assertThat(count("SELECT count(*) FROM user_videos WHERE user_id=? AND video_id=?", ericId, videoId)).isZero();
-        assertThat(count("SELECT count(*) FROM user_videos WHERE user_id=? AND video_id=?", aliceId, videoId)).isEqualTo(1);
-        assertThat(count("SELECT count(*) FROM videos WHERE video_id=?", videoId)).isEqualTo(1);
-        assertThat(count("SELECT count(*) FROM cache_entries WHERE video_id=?", videoId)).isEqualTo(1);
+        assertThat(userVideos.findById(new UserVideoId(ericId, videoId))).isEmpty();
+        assertThat(userVideos.findById(new UserVideoId(aliceId, videoId))).isPresent();
+        assertThat(videos.findById(videoId)).isPresent();
+        assertThat(cacheEntries.findById(videoId)).isPresent();
         assertThat(Files.exists(cached)).isTrue();
     }
 
@@ -94,53 +111,38 @@ class SubscriptionRemovalTest {
     }
 
     private long userId(String username) throws Exception {
-        try (var c = database.open(); var p = c.prepareStatement("SELECT id FROM users WHERE username=?")) {
-            p.setString(1, username);
-            try (ResultSet r = p.executeQuery()) { assertThat(r.next()).isTrue(); return r.getLong(1); }
-        }
+        return users.findByUsername(username).map(user -> user.getId())
+                .orElseThrow(() -> new AssertionError("user was not created"));
     }
 
     private String slug(String username) throws Exception {
-        try (var c = database.open(); var p = c.prepareStatement("SELECT filesystem_slug FROM users WHERE username=?")) {
-            p.setString(1, username);
-            try (ResultSet r = p.executeQuery()) { assertThat(r.next()).isTrue(); return r.getString(1); }
-        }
+        return users.findByUsername(username).map(user -> user.getFilesystemSlug())
+                .orElseThrow(() -> new AssertionError("user was not created"));
     }
 
     private Path libraryPath(String username, String videoId) throws Exception {
-        return database.usersRoot.resolve(slug(username)).resolve("Shared Channel [UCshared]").resolve(videoId);
+        return paths.usersRoot.resolve(slug(username)).resolve("Shared Channel [UCshared]").resolve(videoId);
     }
 
     private void seedChannel(String id) throws Exception {
-        try (var c = database.open(); var p = c.prepareStatement("MERGE INTO youtube_channels(channel_id,name,url,updated_at) KEY(channel_id) VALUES(?,?,?,?)")) {
-            p.setString(1, id); p.setString(2, "Shared Channel"); p.setString(3, "https://www.youtube.com/channel/" + id); p.setString(4, Database.now()); p.executeUpdate();
-        }
+        channels.save(new YouTubeChannelEntity(id, "Shared Channel",
+                "https://www.youtube.com/channel/" + id, ApplicationClock.now()));
     }
 
     private long seedSubscription(long userId, String channelId) throws Exception {
-        try (var c = database.open(); var p = c.prepareStatement("INSERT INTO youtube_subscriptions(user_id,channel_id,created_at) VALUES(?,?,?)", java.sql.Statement.RETURN_GENERATED_KEYS)) {
-            p.setLong(1, userId); p.setString(2, channelId); p.setString(3, Database.now()); p.executeUpdate();
-            try (ResultSet r = p.getGeneratedKeys()) { assertThat(r.next()).isTrue(); return r.getLong(1); }
-        }
+        return subscriptions.save(new YouTubeSubscriptionEntity(userId, channelId, 1,
+                ApplicationClock.now())).getId();
     }
 
     private void seedVideo(String videoId, String channelId) throws Exception {
-        try (var c = database.open(); var p = c.prepareStatement("INSERT INTO videos(video_id,channel_id,title,description,published_at,duration_seconds,is_short,thumbnail_url,availability,metadata_updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)")) {
-            p.setString(1, videoId); p.setString(2, channelId); p.setString(3, "Shared video"); p.setString(4, ""); p.setString(5, Database.now()); p.setInt(6, 60); p.setInt(7, 0); p.setString(8, ""); p.setString(9, "AVAILABLE"); p.setString(10, Database.now()); p.executeUpdate();
-        }
+        String now = ApplicationClock.now();
+        videos.save(new VideoEntity(videoId, channelId, "Shared video", "", now,
+                60, 0, "", "AVAILABLE", now));
     }
 
     private void seedUserVideo(long userId, String videoId, Path path) throws Exception {
-        try (var c = database.open(); var p = c.prepareStatement("INSERT INTO user_videos(user_id,video_id,library_path,playback_token,created_at) VALUES(?,?,?,?,?)")) {
-            p.setLong(1, userId); p.setString(2, videoId); p.setString(3, path.toString()); p.setString(4, UUID.randomUUID().toString()); p.setString(5, Database.now()); p.executeUpdate();
-        }
-    }
-
-    private long count(String sql, Object... args) throws Exception {
-        try (var c = database.open(); var p = c.prepareStatement(sql)) {
-            for (int i = 0; i < args.length; i++) p.setObject(i + 1, args[i]);
-            try (ResultSet r = p.executeQuery()) { assertThat(r.next()).isTrue(); return r.getLong(1); }
-        }
+        userVideos.save(new UserVideoEntity(userId, videoId, path.toString(),
+                UUID.randomUUID().toString(), ApplicationClock.now()));
     }
 
     private static String unique(String prefix) { return prefix + UUID.randomUUID().toString().replace("-", "").substring(0, 12); }

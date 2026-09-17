@@ -1,14 +1,12 @@
 package ch.it4user.fintube.media;
 
-import ch.it4user.fintube.core.Database;
+import ch.it4user.fintube.persistence.entities.JobEntity;
+import ch.it4user.fintube.persistence.repositories.JobRepository;
 import jakarta.annotation.PostConstruct;
 import org.springframework.stereotype.Service;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.time.Instant;
-import java.util.Map;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -18,7 +16,7 @@ import java.util.concurrent.Future;
 /** Low-priority, restartable completion of the same source/cache used by playback. */
 @Service
 public class BackgroundFillService {
-  final Database db;
+  final JobRepository jobs;
   final MediaSourceService sources;
   final FragmentManager fragments;
   final ExecutorService workers = Executors.newSingleThreadExecutor(r -> {
@@ -27,17 +25,18 @@ public class BackgroundFillService {
   final ConcurrentHashMap<String, String> queued = new ConcurrentHashMap<>();
   final ConcurrentHashMap<String, Future<?>> running = new ConcurrentHashMap<>();
 
-  public BackgroundFillService(Database d, MediaSourceService s, FragmentManager f) {
-    db = d; sources = s; fragments = f;
+  public BackgroundFillService(JobRepository j, MediaSourceService s, FragmentManager f) {
+    jobs = j; sources = s; fragments = f;
   }
 
   /** Requeue interrupted jobs after process restart. */
   @PostConstruct
   void recover() {
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "SELECT id,video_id FROM jobs WHERE type='BACKGROUND_FILL' AND status IN ('QUEUED','RUNNING')"); ResultSet r = p.executeQuery()) {
-      while (r.next()) submit(r.getString(2), r.getString(1));
-    } catch (Exception ignored) { }
+    try {
+      for (JobEntity job : jobs.findByTypeAndStatusIn("BACKGROUND_FILL", List.of("QUEUED", "RUNNING"))) {
+        submit(job.getVideoId(), job.getId());
+      }
+    } catch (RuntimeException ignored) { }
   }
 
   /** Existing playback API: enqueue one completion job, deduplicated by video. */
@@ -48,11 +47,11 @@ public class BackgroundFillService {
     String existing = queued.get(video);
     if (existing != null) return existing;
     String id = UUID.randomUUID().toString();
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "INSERT INTO jobs(id,video_id,status,priority,created_at,error,type,requested_fragment,updated_at) VALUES(?,?, 'QUEUED',?,?,?,?,?,?)")) {
-      p.setString(1, id); p.setString(2, video); p.setInt(3, 10); p.setString(4, Database.now()); p.setNull(5, java.sql.Types.VARCHAR);
-      p.setString(6, "BACKGROUND_FILL"); p.setString(7, requestedFragment); p.setString(8, Database.now()); p.executeUpdate();
-    } catch (Exception e) {
+    String now = now();
+    try {
+      jobs.save(new JobEntity(id, video, "QUEUED", 10, now, null, "BACKGROUND_FILL",
+          requestedFragment, 0, 0, 0, null, now, null));
+    } catch (RuntimeException e) {
       return null;
     }
     submit(video, id);
@@ -61,11 +60,12 @@ public class BackgroundFillService {
 
   /** Cancel a queued or running background job. */
   public boolean cancel(String id) {
-    boolean changed = false;
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "UPDATE jobs SET cancel_requested=1,status='CANCELLED',updated_at=?,completed_at=? WHERE id=? AND type='BACKGROUND_FILL' AND status IN ('QUEUED','RUNNING')")) {
-      p.setString(1, Database.now()); p.setString(2, Database.now()); p.setString(3, id); changed = p.executeUpdate() > 0;
-    } catch (Exception ignored) { }
+    boolean changed;
+    try {
+      changed = jobs.cancelBackgroundFill(id, now()) > 0;
+    } catch (RuntimeException ignored) {
+      changed = false;
+    }
     Future<?> future = running.get(id);
     if (future != null) future.cancel(true);
     return changed;
@@ -112,20 +112,22 @@ public class BackgroundFillService {
     }
   }
 
-  private boolean cancelled(String id) throws Exception {
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement("SELECT cancel_requested,status FROM jobs WHERE id=?")) {
-      p.setString(1, id);
-      try (ResultSet r = p.executeQuery()) { return !r.next() || r.getInt(1) != 0 || "CANCELLED".equals(r.getString(2)); }
-    }
+  private boolean cancelled(String id) {
+    return jobs.findById(id)
+        .map(job -> job.getCancelRequested() != 0 || "CANCELLED".equals(job.getStatus()))
+        .orElse(true);
   }
 
-  private void update(String id, String status, String error, int completed, int total) throws Exception {
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "UPDATE jobs SET status=?,error=?,completed_fragments=?,total_fragments=?,updated_at=?,started_at=COALESCE(started_at,?),completed_at=? WHERE id=?")) {
-      String now = Database.now(); p.setString(1, status); p.setString(2, error); p.setInt(3, completed); p.setInt(4, total); p.setString(5, now); p.setString(6, now);
-      p.setString(7, status.equals("COMPLETED") || status.equals("FAILED") || status.equals("CANCELLED") ? now : null); p.setString(8, id); p.executeUpdate();
-    }
+  private void update(String id, String status, String error, int completed, int total) {
+    String now = now();
+    String completedAt = status.equals("COMPLETED") || status.equals("FAILED") || status.equals("CANCELLED")
+        ? now : null;
+    jobs.updateProgress(id, status, error, completed, total, now, completedAt);
   }
-  private void updateQuietly(String id, String status, String error, int completed, int total) { try { update(id, status, error, completed, total); } catch (Exception ignored) { } }
+  private void updateQuietly(String id, String status, String error, int completed, int total) { try { update(id, status, error, completed, total); } catch (RuntimeException ignored) { } }
+
+  private static String now() {
+    return Instant.now().toString();
+  }
 
 }

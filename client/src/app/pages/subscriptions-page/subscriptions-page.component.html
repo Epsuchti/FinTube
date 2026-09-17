@@ -1,0 +1,17 @@
+<div class="page-heading">
+  <div><p class="eyebrow">YOUR CONFIGURATION</p><h1>Subscriptions</h1><p class="muted">Only your subscriptions and their videos appear in this workspace.</p></div>
+  <span class="count-pill">{{ subscriptions().length }} channels</span>
+</div>
+@if (error()) {<div class="toast toast-error" role="alert">{{ error() }}<button type="button" aria-label="Dismiss" (click)="error.set('')">×</button></div>}
+@if (notice()) {<div class="toast" role="status">{{ notice() }}<button type="button" aria-label="Dismiss" (click)="notice.set('')">×</button></div>}
+<section class="panel add-panel">
+  <div><h2>Add a channel</h2><p class="muted">Use a YouTube channel URL, channel ID, or @handle.</p></div>
+  <form class="inline-form" (ngSubmit)="addSubscription()"><input name="channel" [(ngModel)]="channel" placeholder="https://youtube.com/@ExampleChannel"><button class="primary" type="submit" [disabled]="loading()">Add channel</button></form>
+</section>
+<div class="card-grid">
+  @for (subscription of subscriptions(); track subscription.id) {
+    <article class="media-card"><div class="card-icon">{{ subscription.name.charAt(0).toUpperCase() }}</div><div class="card-main"><div class="card-title-row"><h3>{{ subscription.name }}</h3><span class="status" [class.status-off]="!enabled(subscription)">{{ enabled(subscription) ? 'Enabled' : 'Paused' }}</span></div><p class="mono">{{ subscription.channel_id }}</p><p class="muted small">{{ subscription.last_checked_at ? ('Checked ' + (subscription.last_checked_at | date:'mediumDate')) : 'Not synced yet' }}</p></div><div class="card-actions"><button type="button" (click)="refreshSubscription(subscription)" [disabled]="loading()">Refresh</button><button type="button" (click)="updateSubscription(subscription)" [disabled]="loading()">{{ enabled(subscription) ? 'Pause' : 'Enable' }}</button><button class="danger-text" type="button" (click)="removeSubscription(subscription)" [disabled]="loading()">Remove</button></div></article>
+  } @empty {
+    <div class="empty-state"><div class="empty-icon">＋</div><h3>No subscriptions yet</h3><p class="muted">Add a channel above and refresh it to populate your private Jellyfin library.</p></div>
+  }
+</div>

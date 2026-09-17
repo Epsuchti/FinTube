@@ -1,6 +1,9 @@
 package ch.it4user.fintube.media;
 
-import ch.it4user.fintube.core.Database;
+import ch.it4user.fintube.core.ApplicationClock;
+import ch.it4user.fintube.core.SettingsService;
+import ch.it4user.fintube.persistence.entities.MediaSourceEntity;
+import ch.it4user.fintube.persistence.repositories.MediaSourceRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -10,10 +13,6 @@ import org.springframework.stereotype.Service;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -34,11 +33,15 @@ import java.util.regex.Pattern;
 @Service
 public class MediaSourceService {
   private static final Pattern EXPIRE = Pattern.compile("(?:^|[?&])expire=(\\d+)");
-  private final Database db;
+  private final SettingsService settingsService;
+  private final MediaSourceRepository mediaSourceRepository;
   private final ObjectMapper json = new ObjectMapper();
   private final ConcurrentHashMap<String, Source> sources = new ConcurrentHashMap<>();
 
-  public MediaSourceService(Database db) { this.db = db; }
+  public MediaSourceService(SettingsService settingsService, MediaSourceRepository mediaSourceRepository) {
+    this.settingsService = settingsService;
+    this.mediaSourceRepository = mediaSourceRepository;
+  }
 
   /** A logical media fragment. audioUrl is null for progressive sources. */
   public static final class Fragment {
@@ -138,7 +141,7 @@ public class MediaSourceService {
 
   /** Force a new yt-dlp probe, replacing the persisted source URL set. */
   public synchronized Source refresh(String video) throws Exception {
-    var settings = db.settings(false);
+    var settings = settingsService.values(false);
     String bin = settings.getOrDefault("yt_dlp_path", "yt-dlp");
     List<String> command = new ArrayList<>(List.of(bin, "-J", "--no-playlist"));
     String proxy = proxyArgument(settings);
@@ -295,19 +298,21 @@ public class MediaSourceService {
   }
 
   private Source load(String video) throws Exception {
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement("SELECT source_json FROM media_sources WHERE video_id=?")) {
-      p.setString(1, video);
-      try (ResultSet r = p.executeQuery()) { return r.next() ? decode(r.getString(1)) : null; }
-    }
+    MediaSourceEntity entity = mediaSourceRepository.findById(video).orElse(null);
+    return entity == null ? null : decode(entity.getSourceJson());
   }
 
   private void persist(String video, Source source) throws Exception {
     String text = json.writeValueAsString(encode(source));
-    try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "MERGE INTO media_sources(video_id,format_key,source_json,duration_seconds,expires_at,updated_at) KEY(video_id) VALUES(?,?,?,?,?,?)")) {
-      p.setString(1, video); p.setString(2, source.format()); p.setString(3, text); p.setInt(4, source.duration());
-      p.setString(5, source.expiresAt() == null ? null : source.expiresAt().toString()); p.setString(6, Database.now()); p.executeUpdate();
-    }
+    String now = ApplicationClock.now();
+    MediaSourceEntity entity = mediaSourceRepository.findById(video)
+        .orElseGet(() -> new MediaSourceEntity(video, source.format(), text, source.duration(), null, now));
+    entity.setFormatKey(source.format());
+    entity.setSourceJson(text);
+    entity.setDurationSeconds(source.duration());
+    entity.setExpiresAt(source.expiresAt() == null ? null : source.expiresAt().toString());
+    entity.setUpdatedAt(now);
+    mediaSourceRepository.save(entity);
   }
 
   private ObjectNode encode(Source source) {
@@ -350,7 +355,10 @@ public class MediaSourceService {
     try { return Instant.ofEpochSecond(Long.parseLong(matcher.group(1))); } catch (NumberFormatException ignored) { return null; }
   }
   private int parseQuality(String value) { try { return Integer.parseInt(value); } catch (NumberFormatException e) { return 720; } }
-  private String setting(String key, String fallback) { try { return db.settings(false).getOrDefault(key, fallback); } catch (SQLException e) { return fallback; } }
+  private String setting(String key, String fallback) {
+    String value = settingsService.value(key);
+    return value == null ? fallback : value;
+  }
   private List<String> codecs(String key, List<String> fallback) {
     String value = setting(key, String.join(",", fallback));
     List<String> result = Arrays.stream(value.split(",")).map(MediaSourceService::codecName).filter(s -> !s.isBlank()).toList();

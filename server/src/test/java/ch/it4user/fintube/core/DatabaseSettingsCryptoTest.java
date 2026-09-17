@@ -1,44 +1,51 @@
 package ch.it4user.fintube.core;
 
+import ch.it4user.fintube.persistence.entities.SettingEntity;
+import ch.it4user.fintube.persistence.repositories.SettingRepository;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
-import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@SpringBootTest
 class DatabaseSettingsCryptoTest {
-  @TempDir Path temp;
+  private static final Path DATA_DIR = dataDirectory();
+
+  @Autowired SettingsService settings;
+  @Autowired SettingRepository settingRepository;
+  @Autowired ApplicationPaths paths;
+
+  @DynamicPropertySource
+  static void dataProperties(DynamicPropertyRegistry registry) {
+    registry.add("fintube.data-dir", DATA_DIR::toString);
+  }
 
   @Test
   void secretsAreEncryptedAndReadableAcrossDatabaseRecreation() throws Exception {
-    Database first = database();
-    first.saveSetting("youtube_api_key", "super-secret-api-key", true);
+    settings.save("youtube_api_key", "super-secret-api-key", true);
 
-    try (var c = first.open(); var p = c.prepareStatement("SELECT value,secret FROM settings WHERE key='youtube_api_key'")) {
-      var r = p.executeQuery();
-      assertThat(r.next()).isTrue();
-      assertThat(r.getString(1)).doesNotContain("super-secret-api-key").startsWith("enc:v1:");
-      assertThat(r.getInt(2)).isEqualTo(1);
-    }
-    assertThat(first.settings(false).get("youtube_api_key")).isEqualTo("super-secret-api-key");
-    assertThat(first.settings(true).get("youtube_api_key")).isEqualTo(SettingsPolicy.MASK);
+    SettingEntity stored = settingRepository.findById("youtube_api_key").orElseThrow();
+    assertThat(stored.getValue()).doesNotContain("super-secret-api-key").startsWith("enc:v1:");
+    assertThat(stored.getSecret()).isEqualTo(1);
+    assertThat(settings.values(false).get("youtube_api_key")).isEqualTo("super-secret-api-key");
+    assertThat(settings.values(true).get("youtube_api_key")).isEqualTo(SettingsPolicy.MASK);
 
-    Database second = database();
-    assertThat(second.settings(false).get("youtube_api_key")).isEqualTo("super-secret-api-key");
-    assertThat(Files.getPosixFilePermissions(temp.resolve("settings.key")))
-        .containsExactlyInAnyOrder(java.nio.file.attribute.PosixFilePermission.OWNER_READ,
-            java.nio.file.attribute.PosixFilePermission.OWNER_WRITE);
+    SettingsService second = new SettingsService(settingRepository, paths, "");
+    second.initialize();
+    assertThat(second.values(false).get("youtube_api_key")).isEqualTo("super-secret-api-key");
+    assertThat(Files.getPosixFilePermissions(DATA_DIR.resolve("settings.key")))
+        .containsExactlyInAnyOrder(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
   }
 
-  private Database database() throws Exception {
-    Database db = new Database();
-    Field dataDir = Database.class.getDeclaredField("dataDir");
-    dataDir.setAccessible(true);
-    dataDir.set(db, temp.toString());
-    db.init();
-    return db;
+  private static Path dataDirectory() {
+    try { return Files.createTempDirectory("fintube-settings-test-"); }
+    catch (Exception e) { throw new ExceptionInInitializerError(e); }
   }
 }

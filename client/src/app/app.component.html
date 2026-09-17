@@ -1,8 +1,8 @@
 <main class="shell">
   @if (!me() && setupRequired()) {
-    <ft-initial-setup-page [loading]="loading()" (create)="setupToken = $any($event).token; username = $any($event).username; email = $any($event).email; password = $any($event).password; passwordConfirmation = $any($event).confirmation; createInitialAdmin()" />
+    <ft-initial-setup-page (created)="load()" />
   } @else if (!me()) {
-    <ft-auth-page [mode]="authMode()" [loading]="loading()" (modeChange)="authMode.set($any($event)); clearMessages()" (submitAuthentication)="username = $any($event).username; email = $any($event).email; password = $any($event).password; passwordConfirmation = $any($event).confirmation; auth()" />
+    <ft-auth-page (authenticated)="load()" />
   } @else {
     <header class="topbar">
       <button class="wordmark wordmark-button" type="button" (click)="setSection('subscriptions')"><span>FIN</span>TUBE</button>
@@ -12,7 +12,7 @@
       <nav class="sidebar" aria-label="Application navigation">
         <p class="nav-label">LIBRARY</p>
         <button [class.active]="section() === 'subscriptions'" type="button" (click)="setSection('subscriptions')">Subscriptions</button>
-        <button [class.active]="section() === 'videos'" type="button" (click)="setSection('videos')">Videos <span>{{ videos().length }}</span></button>
+        <button [class.active]="section() === 'videos'" type="button" (click)="setSection('videos')">Videos <span>{{ videoCount() }}</span></button>
         <button [class.active]="section() === 'downloads'" type="button" (click)="setSection('downloads')">Downloads</button>
         <p class="nav-label">ACCOUNT</p>
         <button [class.active]="section() === 'account'" type="button" (click)="setSection('account')">Profile &amp; security</button>
@@ -27,31 +27,31 @@
       </nav>
       <section class="content">
         @if (section() === 'subscriptions') {
-          <ft-subscriptions-page [subscriptions]="subscriptions()" [loading]="loading()" (add)="channel = $event; addSubscription()" (toggle)="toggleSubscription($event)" (refresh)="refreshSubscription($event)" (remove)="removeSubscription($event)" />
+          <ft-subscriptions-page />
         }
         @if (section() === 'videos') {
-          <ft-videos-page [videos]="videos()" [playbackUrl]="playbackUrl.bind(this)" (manageChannels)="setSection('subscriptions')" />
+          <ft-videos-page (manageChannels)="setSection('subscriptions')" (videoCountChange)="videoCount.set($event)" />
         }
         @if (section() === 'downloads') {
-          <ft-downloads-page [videos]="videos()" />
+          <ft-downloads-page />
         }
         @if (section() === 'account') {
-          <ft-account-page [profile]="me()" [saving]="saving()" (changePassword)="oldPassword = $event.oldPassword; newPassword = $event.newPassword; newPasswordConfirmation = $event.confirmation; changePassword()" />
+          <ft-account-page />
         }
         @if (me()?.role === 'ADMIN' && section() === 'users') {
-          <ft-admin-users-page [users]="adminUsers()" [currentUserId]="me()?.id" (roleChange)="updateRole($event.user, $event.role)" />
+          <ft-admin-users-page />
         }
         @if (me()?.role === 'ADMIN' && section() === 'settings') {
-          <ft-admin-settings-page [groups]="settingGroups" [values]="settings()" [secretSettings]="secretSettings" [saving]="saving()" (valueChange)="setSetting($event.key, $event.value)" (save)="saveSettings()" />
+          <ft-admin-settings-page />
         }
         @if (me()?.role === 'ADMIN' && section() === 'jellyfin') {
-          <ft-admin-jellyfin-page [status]="jellyfinStatus()" [saving]="saving()" [configuredUrl]="settingValue('jellyfin_url')" (validate)="validateJellyfin()" (refresh)="refreshJellyfin()" (editSettings)="setSection('settings')" />
+          <ft-admin-jellyfin-page (editSettings)="setSection('settings')" />
         }
         @if (me()?.role === 'ADMIN' && section() === 'cache') {
-          <ft-admin-cache-page [entries]="cacheEntries()" (delete)="deleteCache($event)" />
+          <ft-admin-cache-page />
         }
         @if (me()?.role === 'ADMIN' && section() === 'jobs') {
-          <ft-admin-jobs-page [jobs]="jobs()" (cancel)="cancelJob($event)" />
+          <ft-admin-jobs-page />
         }
       </section>
     </div>

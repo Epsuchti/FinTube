@@ -1,30 +1,42 @@
 package ch.it4user.fintube.core;
 
 import ch.it4user.fintube.media.FragmentManager;
+import ch.it4user.fintube.persistence.entities.CacheEntryEntity;
+import ch.it4user.fintube.persistence.repositories.CacheEntryRepository;
+import ch.it4user.fintube.persistence.entities.CachedFragmentEntity;
+import ch.it4user.fintube.persistence.repositories.CachedFragmentRepository;
 import jakarta.annotation.PostConstruct;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 
 /** Global retention and minimum-free-space maintenance for the shared cache. */
 @Component
 class CacheMaintenance {
-  final Database db;
+  final ApplicationPaths paths;
+  final SettingsService settingsService;
+  final CacheEntryRepository cacheEntries;
+  final CachedFragmentRepository cachedFragments;
   private final AtomicLong nextCleanupAt = new AtomicLong(0L);
-  CacheMaintenance(Database d) { db = d; }
+
+  CacheMaintenance(ApplicationPaths paths, SettingsService settingsService,
+                   CacheEntryRepository cacheEntries, CachedFragmentRepository cachedFragments) {
+    this.paths = paths;
+    this.settingsService = settingsService;
+    this.cacheEntries = cacheEntries;
+    this.cachedFragments = cachedFragments;
+  }
 
   @PostConstruct
   void recoverTemporaryFiles() {
-    try (Stream<Path> files = Files.walk(db.cacheRoot)) {
+    try (Stream<Path> files = Files.walk(paths.cacheRoot)) {
       files.filter(p -> p.getFileName().toString().contains(".tmp-")).forEach(p -> {
         try { Files.deleteIfExists(p); } catch (Exception ignored) { }
       });
@@ -42,53 +54,45 @@ class CacheMaintenance {
       long now = System.currentTimeMillis();
       long scheduled = nextCleanupAt.get();
       if (scheduled > now) return;
-      int interval = Integer.parseInt(db.settings(false)
-          .getOrDefault("cache_cleanup_interval_minutes", "360"));
+      int interval = Integer.parseInt(setting("cache_cleanup_interval_minutes", "360"));
       if (interval < 1) interval = 360;
       // Reserve the next run before doing any I/O so overlapping scheduler
       // invocations cannot perform duplicate eviction work.
       nextCleanupAt.set(now + interval * 60_000L);
-      int days = Integer.parseInt(db.settings(false).getOrDefault("cache_retention_days", "30"));
-      evict("f.last_accessed_at<?", Instant.now().minus(Duration.ofDays(days)).toString(), Long.MAX_VALUE);
-      long minimum = Long.parseLong(db.settings(false).getOrDefault("cache_min_free_gb", "20")) * 1024 * 1024 * 1024L;
-      long usable = Files.getFileStore(db.cacheRoot).getUsableSpace();
-      if (usable < minimum) evict("1=1", null, minimum - usable);
-    } catch (Exception ignored) { }
+      int days = Integer.parseInt(setting("cache_retention_days", "30"));
+      evict(EvictionMode.RETENTION, Instant.now().minus(Duration.ofDays(days)).toString(), Long.MAX_VALUE);
+      long minimum = Long.parseLong(setting("cache_min_free_gb", "20")) * 1024 * 1024 * 1024L;
+      long usable = Files.getFileStore(paths.cacheRoot).getUsableSpace();
+      if (usable < minimum) evict(EvictionMode.PRESSURE, null, minimum - usable);
+    } catch (RuntimeException | java.io.IOException ignored) { }
   }
 
   /** Retention deletes aged data; pressure eviction removes oldest inactive fragments. */
-  void evict(String predicate, String cutoff, long needed) throws Exception {
+  void evict(EvictionMode mode, String cutoff, long needed) throws java.io.IOException {
     long freed = 0;
-    try (Connection c = db.open(); PreparedStatement q = c.prepareStatement(
-        "SELECT f.video_id,f.format_key,f.fragment_id,f.path,f.size_bytes FROM cached_fragments f WHERE " + predicate +
-            " AND NOT EXISTS(SELECT 1 FROM cache_entries e WHERE e.video_id=f.video_id AND (e.active_readers>0 OR e.active_writers>0)) ORDER BY f.last_accessed_at ASC")) {
-      if (cutoff != null) q.setString(1, cutoff);
-      try (ResultSet r = q.executeQuery()) {
-        while (r.next() && freed < needed) {
-          String video = r.getString(1), format = r.getString(2), fragment = r.getString(3);
-          Path file = Path.of(r.getString(4));
-          long size = r.getLong(5);
-          synchronized (FragmentManager.EVICTION_LOCK) {
-            try (PreparedStatement active = c.prepareStatement("SELECT active_readers,active_writers FROM cache_entries WHERE video_id=?")) {
-              active.setString(1, video);
-              try (ResultSet a = active.executeQuery()) {
-                if (a.next() && (a.getInt(1) > 0 || a.getInt(2) > 0)) continue;
-              }
-            }
-            Files.deleteIfExists(file);
-            // Recheck active leases before removing the row. Lease acquisition
-            // uses the same process lock, so this check-and-unlink is atomic
-            // with respect to new readers/writers in this JVM.
-            try (PreparedStatement d = c.prepareStatement(
-                "DELETE FROM cached_fragments WHERE video_id=? AND format_key=? AND fragment_id=? " +
-                    "AND NOT EXISTS(SELECT 1 FROM cache_entries e WHERE e.video_id=? AND (e.active_readers>0 OR e.active_writers>0))")) {
-              d.setString(1, video); d.setString(2, format); d.setString(3, fragment); d.setString(4, video);
-              d.executeUpdate();
-            }
-          }
-          freed += size;
-        }
+    List<CachedFragmentEntity> candidates = mode == EvictionMode.RETENTION
+        ? cachedFragments.findEvictableBefore(cutoff)
+        : cachedFragments.findEvictableAll();
+    for (CachedFragmentEntity candidate : candidates) {
+      if (freed >= needed) break;
+      String video = candidate.getVideoId();
+      synchronized (FragmentManager.EVICTION_LOCK) {
+        // Recheck active leases before unlinking. Lease acquisition uses the
+        // same process lock, making this check-and-unlink atomic in this JVM.
+        CacheEntryEntity entry = cacheEntries.findById(video).orElse(null);
+        if (entry != null && (entry.getActiveReaders() > 0 || entry.getActiveWriters() > 0)) continue;
+        Files.deleteIfExists(Path.of(candidate.getPath()));
+        // Recheck active leases in the repository before removing the row.
+        int deleted = cachedFragments.deleteIfInactive(video, candidate.getFormatKey(), candidate.getFragmentId());
+        if (deleted > 0) freed += candidate.getSizeBytes();
       }
     }
   }
+
+  private String setting(String key, String fallback) {
+    String value = settingsService.value(key);
+    return value == null ? fallback : value;
+  }
+
+  enum EvictionMode { RETENTION, PRESSURE }
 }

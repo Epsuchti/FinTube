@@ -1,14 +1,107 @@
 package ch.it4user.fintube.core;
-import jakarta.annotation.PostConstruct; import org.springframework.beans.factory.annotation.Value; import org.springframework.stereotype.Component;
+
+import ch.it4user.fintube.persistence.entities.SetupStateEntity;
+import ch.it4user.fintube.persistence.repositories.SetupStateRepository;
+import ch.it4user.fintube.persistence.entities.UserEntity;
+import ch.it4user.fintube.persistence.repositories.UserRepository;
 import ch.it4user.fintube.service.AuthService;
-import java.nio.file.*; import java.nio.file.attribute.PosixFilePermission; import java.security.SecureRandom; import java.sql.*; import java.util.*;
+import jakarta.annotation.PostConstruct;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
+import java.security.SecureRandom;
+import java.util.Base64;
+import java.util.Set;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
+
 /** Provisions a one-time credential; it never creates or overwrites an administrator itself. */
-@Component public class Bootstrap { final Database db; final AuthService auth; @Value("${fintube.setup-admin-token}") String configuredToken; Bootstrap(Database d,AuthService a){db=d;auth=a;}
- @PostConstruct void prepareSetup() throws Exception {ensureToken();}
- synchronized void ensureToken() throws Exception {if(hasAdmin()||tokenHash()!=null)return;String token=configuredToken==null?"":configuredToken.trim();boolean generated=token.isBlank();if(generated){byte[] bytes=new byte[32];new SecureRandom().nextBytes(bytes);token=Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);writeLocalToken(token);}try(Connection c=db.open();PreparedStatement p=c.prepareStatement("MERGE INTO setup_state(key,value,created_at) KEY(key) VALUES('admin_token_hash',?,?)")){p.setString(1,auth.hash(token));p.setString(2,Database.now());p.executeUpdate();}}
- public boolean required(){try{boolean missing=!hasAdmin();if(missing&&tokenHash()==null)ensureToken();return missing;}catch(Exception e){return true;}}
- public long createAdmin(String username,String email,String password,String token) throws Exception {if(!required())throw new IllegalStateException("an administrator already exists");String hash=tokenHash();if(hash==null||!auth.matches(token,hash))throw new SecurityException("invalid setup token");if(!username.matches("[A-Za-z0-9_.-]{3,48}")||password.length()<12)throw new IllegalArgumentException("username or password does not meet policy");String slug=auth.slug(username);long id;try(Connection c=db.open();PreparedStatement p=c.prepareStatement("INSERT INTO users(username,email,password_hash,role,filesystem_slug,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",Statement.RETURN_GENERATED_KEYS)){p.setString(1,username);p.setString(2,email==null||email.isBlank()?null:email);p.setString(3,auth.hash(password));p.setString(4,"ADMIN");p.setString(5,slug);p.setString(6,Database.now());p.setString(7,Database.now());p.executeUpdate();try(ResultSet keys=p.getGeneratedKeys()){if(!keys.next())throw new SQLException("admin ID was not returned");id=keys.getLong(1);}}Files.createDirectories(db.usersRoot.resolve(slug));try(Connection c=db.open();PreparedStatement p=c.prepareStatement("DELETE FROM setup_state WHERE key='admin_token_hash'")){p.executeUpdate();}Files.deleteIfExists(db.root.resolve("setup-admin-token"));return id;}
- private boolean hasAdmin() throws Exception {try(Connection c=db.open();PreparedStatement p=c.prepareStatement("SELECT 1 FROM users WHERE role='ADMIN' LIMIT 1")){return p.executeQuery().next();}}
- private String tokenHash() throws Exception {try(Connection c=db.open();PreparedStatement p=c.prepareStatement("SELECT value FROM setup_state WHERE key='admin_token_hash'")){ResultSet r=p.executeQuery();return r.next()?r.getString(1):null;}}
- private void writeLocalToken(String token) throws Exception {Path file=db.root.resolve("setup-admin-token");Files.writeString(file,token+"\n",StandardOpenOption.CREATE,StandardOpenOption.TRUNCATE_EXISTING);try{Files.setPosixFilePermissions(file,Set.of(PosixFilePermission.OWNER_READ,PosixFilePermission.OWNER_WRITE));}catch(UnsupportedOperationException ignored){}}
+@Component
+@org.springframework.context.annotation.DependsOn("liquibase")
+public class Bootstrap {
+    private static final String TOKEN_KEY = "admin_token_hash";
+
+    private final ApplicationPaths paths;
+    private final SetupStateRepository setupState;
+    private final UserRepository users;
+    private final AuthService auth;
+
+    @Value("${fintube.setup-admin-token}")
+    String configuredToken;
+
+    Bootstrap(ApplicationPaths paths, SetupStateRepository setupState, UserRepository users, AuthService auth) {
+        this.paths = paths;
+        this.setupState = setupState;
+        this.users = users;
+        this.auth = auth;
+    }
+
+    @PostConstruct
+    void prepareSetup() throws Exception {
+        ensureToken();
+    }
+
+    @Transactional
+    synchronized void ensureToken() throws Exception {
+        if (hasAdmin() || tokenHash() != null) return;
+
+        String token = configuredToken == null ? "" : configuredToken.trim();
+        if (token.isBlank()) {
+            byte[] bytes = new byte[32];
+            new SecureRandom().nextBytes(bytes);
+            token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+            writeLocalToken(token);
+        }
+        setupState.save(new SetupStateEntity(TOKEN_KEY, auth.hash(token), ApplicationClock.now()));
+    }
+
+    public boolean required() {
+        try {
+            boolean missing = !hasAdmin();
+            if (missing && tokenHash() == null) ensureToken();
+            return missing;
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    @Transactional
+    public long createAdmin(String username, String email, String password, String token) throws Exception {
+        if (!required()) throw new IllegalStateException("an administrator already exists");
+        String hash = tokenHash();
+        if (hash == null || !auth.matches(token, hash)) throw new SecurityException("invalid setup token");
+        if (!username.matches("[A-Za-z0-9_.-]{3,48}") || password.length() < 12) {
+            throw new IllegalArgumentException("username or password does not meet policy");
+        }
+
+        String slug = auth.slug(username);
+        String now = ApplicationClock.now();
+        UserEntity user = users.save(new UserEntity(username,
+                email == null || email.isBlank() ? null : email,
+                auth.hash(password), "ADMIN", slug, now, now));
+        Files.createDirectories(paths.usersRoot.resolve(slug));
+        setupState.deleteById(TOKEN_KEY);
+        Files.deleteIfExists(paths.root.resolve("setup-admin-token"));
+        return user.getId();
+    }
+
+    private boolean hasAdmin() {
+        return users.existsByRole("ADMIN");
+    }
+
+    private String tokenHash() {
+        return setupState.findById(TOKEN_KEY).map(SetupStateEntity::getValue).orElse(null);
+    }
+
+    private void writeLocalToken(String token) throws Exception {
+        Path file = paths.root.resolve("setup-admin-token");
+        Files.writeString(file, token + "\n");
+        try {
+            Files.setPosixFilePermissions(file,
+                    Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+        } catch (UnsupportedOperationException ignored) {
+            // Windows and other filesystems may not expose POSIX permissions.
+        }
+    }
 }
