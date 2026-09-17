@@ -1,8 +1,109 @@
-<main>
-  <p class="eyebrow">FINANCE · VIDEO · INSIGHT</p>
-  <h1>FinTube</h1>
-  <p class="subtitle">Your starting point for finance video intelligence.</p>
-  @if (hello$ | async; as hello) {
-    <p class="api-status">{{ hello.message }}</p>
+<main class="shell">
+  @if (!me()) {
+    <section class="auth-layout">
+      <div class="brand-panel">
+        <p class="eyebrow">PRIVATE MEDIA, YOUR WAY</p>
+        <h1>Watch what you follow.</h1>
+        <p class="lede">FinTube keeps YouTube subscriptions personal, stores metadata locally, and presents stable backend-owned media to Jellyfin.</p>
+        <div class="trust-list"><span>✓ Per-user libraries</span><span>✓ Shared media cache</span><span>✓ Jellyfin never contacts YouTube</span></div>
+      </div>
+      <section class="auth-card" aria-labelledby="auth-title">
+        <div class="wordmark"><span>FIN</span>TUBE</div>
+        <p class="eyebrow">{{ authMode() === 'login' ? 'WELCOME BACK' : 'CREATE YOUR ACCOUNT' }}</p>
+        <h2 id="auth-title">{{ authMode() === 'login' ? 'Sign in' : 'Register' }}</h2>
+        <p class="muted">{{ authMode() === 'login' ? 'Continue to your private library.' : 'Your account starts with an empty subscription list.' }}</p>
+        <form (ngSubmit)="auth()" novalidate>
+          <label for="username">Username</label>
+          <input id="username" name="username" [(ngModel)]="username" autocomplete="username" required maxlength="48" placeholder="e.g. eric">
+          @if (authMode() === 'register') {
+            <label for="email">Email <span class="muted">(optional)</span></label>
+            <input id="email" name="email" [(ngModel)]="email" autocomplete="email" type="email" placeholder="you@example.com">
+          }
+          <label for="password">Password</label>
+          <input id="password" name="password" [(ngModel)]="password" autocomplete="current-password" type="password" minlength="12" required placeholder="At least 12 characters">
+          @if (authMode() === 'register') {
+            <label for="passwordConfirmation">Confirm password</label>
+            <input id="passwordConfirmation" name="passwordConfirmation" [(ngModel)]="passwordConfirmation" autocomplete="new-password" type="password" minlength="12" required>
+          }
+          <button class="primary wide" type="submit" [disabled]="loading()">{{ loading() ? 'Working…' : (authMode() === 'login' ? 'Sign in' : 'Create account') }}</button>
+        </form>
+        <button class="link-button" type="button" (click)="authMode.set(authMode() === 'login' ? 'register' : 'login'); clearMessages()">{{ authMode() === 'login' ? 'Need an account? Register' : 'Already have an account? Sign in' }}</button>
+      </section>
+    </section>
+  } @else {
+    <header class="topbar">
+      <button class="wordmark wordmark-button" type="button" (click)="setSection('subscriptions')"><span>FIN</span>TUBE</button>
+      <div class="topbar-actions"><span class="identity"><strong>{{ me()?.username }}</strong><small>{{ me()?.role }}</small></span><button type="button" (click)="setSection('account')">Account</button><button type="button" (click)="logout()">Sign out</button></div>
+    </header>
+    <div class="app-layout">
+      <nav class="sidebar" aria-label="Application navigation">
+        <p class="nav-label">LIBRARY</p>
+        <button [class.active]="section() === 'subscriptions'" type="button" (click)="setSection('subscriptions')">Subscriptions</button>
+        <button [class.active]="section() === 'videos'" type="button" (click)="setSection('videos')">Videos <span>{{ videos().length }}</span></button>
+        <p class="nav-label">ACCOUNT</p>
+        <button [class.active]="section() === 'account'" type="button" (click)="setSection('account')">Profile &amp; security</button>
+        @if (me()?.role === 'ADMIN') {
+          <p class="nav-label">ADMINISTRATION</p>
+          <button [class.active]="section() === 'users'" type="button" (click)="setSection('users')">Users</button>
+          <button [class.active]="section() === 'settings'" type="button" (click)="setSection('settings')">Global settings</button>
+          <button [class.active]="section() === 'jellyfin'" type="button" (click)="setSection('jellyfin')">Jellyfin integration</button>
+          <button [class.active]="section() === 'cache'" type="button" (click)="setSection('cache')">Cache status</button>
+          <button [class.active]="section() === 'jobs'" type="button" (click)="setSection('jobs')">Jobs</button>
+        }
+      </nav>
+      <section class="content">
+        @if (section() === 'subscriptions') {
+          <div class="page-heading"><div><p class="eyebrow">YOUR CONFIGURATION</p><h1>Subscriptions</h1><p class="muted">Only your subscriptions and their videos appear in this workspace.</p></div><span class="count-pill">{{ subscriptions().length }} channels</span></div>
+          <section class="panel add-panel"><div><h2>Add a channel</h2><p class="muted">Use a YouTube channel URL, channel ID, or @handle. The backend resolves and stores the canonical channel.</p></div><form class="inline-form" (ngSubmit)="addSubscription()"><label class="sr-only" for="channel">Channel URL, ID, or handle</label><input id="channel" name="channel" [(ngModel)]="channel" placeholder="https://youtube.com/@ExampleChannel"><button class="primary" type="submit" [disabled]="loading()">Add channel</button></form></section>
+          <div class="card-grid">
+            @for (subscription of subscriptions(); track subscription.id) {
+              <article class="media-card"><div class="card-icon">{{ subscription.name.charAt(0).toUpperCase() }}</div><div class="card-main"><div class="card-title-row"><h3>{{ subscription.name }}</h3><span class="status" [class.status-off]="!enabled(subscription)">{{ enabled(subscription) ? 'Enabled' : 'Paused' }}</span></div><p class="mono">{{ subscription.channel_id }}</p><p class="muted small">{{ subscription.last_checked_at ? ('Checked ' + (subscription.last_checked_at | date:'mediumDate')) : 'Not synced yet' }}</p></div><div class="card-actions"><button type="button" (click)="refreshSubscription(subscription)">Refresh</button><button type="button" (click)="toggleSubscription(subscription)">{{ enabled(subscription) ? 'Pause' : 'Enable' }}</button><button class="danger-text" type="button" (click)="removeSubscription(subscription)">Remove</button></div></article>
+            } @empty {<div class="empty-state"><div class="empty-icon">＋</div><h3>No subscriptions yet</h3><p class="muted">Add a channel above and refresh it to populate your private Jellyfin library.</p></div>}
+          </div>
+        }
+        @if (section() === 'videos') {
+          <div class="page-heading"><div><p class="eyebrow">LOCAL METADATA</p><h1>Your videos</h1><p class="muted">Metadata is supplied by FinTube. Playback remains behind a stable backend URL.</p></div><span class="count-pill">{{ videos().length }} videos</span></div>
+          <div class="card-grid video-grid">
+            @for (video of videos(); track video.video_id) {
+              <article class="video-card"><div class="video-art"><span>▶</span></div><div class="video-content"><h3>{{ video.title }}</h3><p class="muted">{{ video.channel || 'Unknown channel' }} · {{ formatDuration(video.duration_seconds) }}</p><p class="muted small">{{ video.published_at ? (video.published_at | date:'mediumDate') : 'Publication date unavailable' }}</p><div class="card-actions"><a class="button primary" [href]="playbackUrl(video)" target="_blank" rel="noopener">Play</a><button type="button" (click)="setSection('subscriptions')">Manage channel</button></div></div></article>
+            } @empty {<div class="empty-state"><div class="empty-icon">▶</div><h3>Your library is empty</h3><p class="muted">Refresh an enabled subscription to discover videos.</p></div>}
+          </div>
+        }
+        @if (section() === 'account') {
+          <div class="page-heading"><div><p class="eyebrow">ACCOUNT</p><h1>Profile &amp; security</h1><p class="muted">Manage your account credentials. Global infrastructure settings remain administrator-only.</p></div></div>
+          <section class="panel profile-panel"><div class="profile-avatar">{{ me()?.username?.charAt(0)?.toUpperCase() }}</div><div><h2>{{ me()?.username }}</h2><p class="muted">Role: {{ me()?.role }} · Filesystem slug: <span class="mono">{{ me()?.filesystemSlug }}</span></p></div></section>
+          <section class="panel form-panel"><h2>Change password</h2><p class="muted">Your current password is required. Passwords are hashed by the backend and are never displayed.</p><form (ngSubmit)="changePassword()" novalidate><label for="oldPassword">Current password</label><input id="oldPassword" name="oldPassword" [(ngModel)]="oldPassword" type="password" autocomplete="current-password" required><label for="newPassword">New password</label><input id="newPassword" name="newPassword" [(ngModel)]="newPassword" type="password" autocomplete="new-password" minlength="12" required><label for="newPasswordConfirmation">Confirm new password</label><input id="newPasswordConfirmation" name="newPasswordConfirmation" [(ngModel)]="newPasswordConfirmation" type="password" autocomplete="new-password" minlength="12" required><button class="primary" type="submit" [disabled]="saving()">{{ saving() ? 'Saving…' : 'Change password' }}</button></form></section>
+        }
+        @if (me()?.role === 'ADMIN' && section() === 'users') {
+          <div class="page-heading"><div><p class="eyebrow">ADMINISTRATION</p><h1>Users</h1><p class="muted">Review accounts and manage roles. Users cannot inspect or change one another’s subscriptions.</p></div><span class="count-pill">{{ adminUsers().length }} accounts</span></div>
+          <section class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Filesystem slug</th><th>Created</th><th></th></tr></thead><tbody>@for (user of adminUsers(); track user.id) {<tr><td><strong>{{ user.username }}</strong><small>{{ user.email || 'No email' }}</small></td><td><span class="status" [class.status-admin]="user.role === 'ADMIN'">{{ user.role }}</span></td><td class="mono">{{ user.filesystem_slug }}</td><td>{{ user.created_at | date:'mediumDate' }}</td><td><select [ngModel]="user.role" (ngModelChange)="updateRole(user, $event)" [disabled]="user.id === me()?.id"><option value="USER">USER</option><option value="ADMIN">ADMIN</option></select></td></tr>}</tbody></table></div></section>
+        }
+        @if (me()?.role === 'ADMIN' && section() === 'settings') {
+          <div class="page-heading"><div><p class="eyebrow">ADMINISTRATION</p><h1>Global settings</h1><p class="muted">These settings affect all users and the shared cache. Secret values are masked in responses and omitted when unchanged.</p></div></div>
+          @for (group of settingGroups; track group.title) {<section class="panel settings-group"><h2>{{ group.title }}</h2><div class="settings-grid">@for (key of group.keys; track key) {<label>{{ key }}<input [type]="secretSettings.has(key) ? 'password' : 'text'" [value]="settingValue(key)" (input)="setSetting(key, $any($event.target).value)" [placeholder]="secretSettings.has(key) ? 'Leave masked to keep current value' : ''"><small class="muted">{{ secretSettings.has(key) ? 'Secret · stored server-side and never shown to normal users' : 'Administrator-controlled global value' }}</small></label>}</div></section>}
+          <button class="primary" type="button" (click)="saveSettings()" [disabled]="saving()">{{ saving() ? 'Saving…' : 'Save all settings' }}</button>
+        }
+        @if (me()?.role === 'ADMIN' && section() === 'jellyfin') {
+          <div class="page-heading"><div><p class="eyebrow">ADMINISTRATION</p><h1>Jellyfin integration</h1><p class="muted">Validate the configured server, request library scans, and monitor runtime synchronization. Jellyfin should use Direct Play and never contact YouTube.</p></div><span class="count-pill" [class.count-good]="jellyfinStatus()?.reachable">{{ jellyfinStatus()?.reachable ? 'Reachable' : 'Not validated' }}</span></div>
+          <section class="panel integration-actions"><div><h2>Connection</h2><p class="muted">{{ jellyfinStatus()?.message || 'No validation has been requested in this session.' }}</p><p class="small muted">{{ jellyfinStatus()?.baseUrl || settingValue('jellyfin_url') || 'No Jellyfin URL configured' }} · API key {{ jellyfinStatus()?.apiKeyConfigured ? 'configured' : 'missing' }}</p></div><div class="card-actions"><button type="button" (click)="validateJellyfin()" [disabled]="saving()">{{ saving() ? 'Checking…' : 'Validate connection' }}</button><button class="primary" type="button" (click)="refreshJellyfin()" [disabled]="saving() || !jellyfinStatus()?.reachable">{{ saving() ? 'Requesting…' : 'Refresh libraries' }}</button><button type="button" (click)="setSection('settings')">Edit settings</button></div></section>
+          <div class="integration-grid">
+            <section class="panel stat-panel"><p class="eyebrow">SERVER</p><h2>{{ jellyfinStatus()?.serverName || 'Unknown server' }}</h2><p class="muted">Version {{ jellyfinStatus()?.version || 'unknown' }} · HTTP {{ jellyfinStatus()?.statusCode || '—' }}</p><span class="status" [class.status-off]="!jellyfinStatus()?.enabled">{{ jellyfinStatus()?.enabled ? 'Enabled' : 'Disabled' }}</span></section>
+            <section class="panel stat-panel"><p class="eyebrow">LIBRARY REFRESH</p><h2>{{ jellyfinStatus()?.refreshCount || 0 }} requested</h2><p class="muted">{{ jellyfinStatus()?.lastRefreshAt ? (jellyfinStatus()?.lastRefreshAt | date:'medium') : 'No refresh recorded' }}</p><span class="status" [class.status-off]="jellyfinStatus()?.lastRefreshSuccess === false">{{ jellyfinStatus()?.lastRefreshMessage || 'Waiting' }}</span></section>
+            <section class="panel stat-panel"><p class="eyebrow">RUNTIME SYNC</p><h2>{{ jellyfinStatus()?.runtimeSuccessCount || 0 }} updated</h2><p class="muted">{{ jellyfinStatus()?.pendingRuntimeSyncs || 0 }} pending · {{ jellyfinStatus()?.runtimeFailureCount || 0 }} failed</p><span class="status" [class.status-off]="jellyfinStatus()?.lastRuntimeSyncSuccess === false">{{ jellyfinStatus()?.lastRuntimeSyncMessage || 'Waiting' }}</span></section>
+          </div>
+          <section class="panel guidance-panel"><h2>Direct Play guidance</h2><p class="muted">Set Jellyfin clients to <strong>Maximum</strong> quality where possible. The FinTube quality setting chooses the shared YouTube representation; Jellyfin’s bitrate selector is separate and may trigger transcoding.</p><p class="muted small">Generated `.strm` files point only to FinTube’s stable backend URL. Thumbnails and NFO metadata are local, so Jellyfin does not need to reach YouTube.</p></section>
+        }
+        @if (me()?.role === 'ADMIN' && section() === 'cache') {
+          <div class="page-heading"><div><p class="eyebrow">ADMINISTRATION</p><h1>Cache status</h1><p class="muted">Shared media is global across users. Active readers and writers are protected from eviction.</p></div><span class="count-pill">{{ cacheEntries().length }} entries</span></div>
+          <section class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Video</th><th>Format</th><th>Status</th><th>Last accessed</th><th>Activity</th><th></th></tr></thead><tbody>@for (entry of cacheEntries(); track entry.video_id + entry.format_key) {<tr><td class="mono">{{ entry.video_id }}</td><td>{{ entry.format_key || 'Default' }}</td><td><span class="status">{{ entry.status }}</span></td><td>{{ entry.last_accessed_at | date:'medium' }}</td><td>{{ entry.active_readers || 0 }} readers · {{ entry.active_writers || 0 }} writers</td><td><button class="danger-text" type="button" [disabled]="(entry.active_readers || 0) > 0 || (entry.active_writers || 0) > 0" (click)="deleteCache(entry)">Delete</button></td></tr>} @empty {<tr><td colspan="6" class="empty-cell">No cache entries.</td></tr>}</tbody></table></div></section>
+        }
+        @if (me()?.role === 'ADMIN' && section() === 'jobs') {
+          <div class="page-heading"><div><p class="eyebrow">ADMINISTRATION</p><h1>Background jobs</h1><p class="muted">Playback and seek work takes priority over cache filling. Cancel queued or running jobs when needed.</p></div><span class="count-pill">{{ jobs().length }} jobs</span></div>
+          <section class="panel table-panel"><div class="table-wrap"><table><thead><tr><th>Job</th><th>Video</th><th>Status</th><th>Priority</th><th>Created</th><th></th></tr></thead><tbody>@for (job of jobs(); track job.id) {<tr><td class="mono">{{ job.id }}</td><td class="mono">{{ job.video_id }}</td><td><span class="status" [class.status-running]="job.status === 'RUNNING'">{{ job.status }}</span>@if (job.error) {<small class="error-text">{{ job.error }}</small>}</td><td>{{ job.priority }}</td><td>{{ job.created_at | date:'medium' }}</td><td><button type="button" [disabled]="job.status !== 'QUEUED' && job.status !== 'RUNNING'" (click)="cancelJob(job)">Cancel</button></td></tr>} @empty {<tr><td colspan="6" class="empty-cell">No background jobs.</td></tr>}</tbody></table></div></section>
+        }
+      </section>
+    </div>
   }
+  @if (error()) {<div class="toast toast-error" role="alert">{{ error() }}<button type="button" aria-label="Dismiss" (click)="error.set('')">×</button></div>}
+  @if (notice()) {<div class="toast" role="status">{{ notice() }}<button type="button" aria-label="Dismiss" (click)="notice.set('')">×</button></div>}
 </main>

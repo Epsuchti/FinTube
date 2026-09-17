@@ -1,0 +1,5 @@
+package ch.it4user.fintube.core;
+import org.springframework.beans.factory.annotation.*; import org.springframework.stereotype.Component; import jakarta.annotation.PostConstruct; import java.sql.*; import java.nio.file.*;
+@Component class Bootstrap { final Database db; final AuthService auth; @Value("${fintube.admin-username}")String name; @Value("${fintube.admin-password}")String password; Bootstrap(Database d,AuthService a){db=d;auth=a;}
+ @PostConstruct void admin() throws Exception {if(name==null||name.isBlank()||password==null||password.isBlank())return;try(Connection c=db.open();PreparedStatement q=c.prepareStatement("SELECT count(*) FROM users")){if(q.executeQuery().getInt(1)>0)return;}String slug=auth.slug(name);try(Connection c=db.open();PreparedStatement p=c.prepareStatement("INSERT INTO users(username,password_hash,role,filesystem_slug,created_at,updated_at) VALUES(?,?,?,?,?,?)")){p.setString(1,name);p.setString(2,auth.hash(password));p.setString(3,"ADMIN");p.setString(4,slug);p.setString(5,Database.now());p.setString(6,Database.now());p.executeUpdate();}Files.createDirectories(db.usersRoot.resolve(slug));}
+}

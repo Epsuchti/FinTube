@@ -1,48 +1,36 @@
 # FinTube
 
-FinTube is a full-stack finance video application starter built with Angular 21 and Spring Boot 4 (Java 21).
+FinTube is a self-hosted, multi-user YouTube-to-Jellyfin bridge. Jellyfin sees only local `.strm`, `.nfo`, thumbnail and backend playback URLs; it never receives a YouTube URL or API credential.
 
-## Hello world
+## Run
 
-The home page calls the Spring Boot API at `GET /api/hello` and displays the returned message.
-
-## Run locally
-
-In one terminal, start the API:
+Install `yt-dlp` on the server, then bootstrap the first admin only once:
 
 ```bash
-cd server
-./mvnw spring-boot:run
+ADMIN_USERNAME=admin ADMIN_PASSWORD='change-this-to-a-long-secret' ./server/mvnw -f server/pom.xml spring-boot:run
 ```
 
-In a second terminal, start the Angular development server:
+The application is at `http://localhost:8080`. Configure the YouTube Data API key, public bridge URL, Jellyfin values, quality and cache policy in the admin screen. Bootstrap values are ignored after a user exists.
+
+Persistent state defaults to `./data` and can be relocated with `FINTUBE_DATA_DIR`. It contains a SQLite database, `users/<safe-user-slug>/` Jellyfin trees and the global `cache/` tree. Map each individual user directory as a separate Jellyfin library; do not map the parent `users` directory to every Jellyfin account.
+
+## Architecture
+
+- Accounts use BCrypt hashes and opaque HTTP-only server-side session cookies. Subscription/library queries are always filtered by authenticated user ID; admin endpoints require `ADMIN`.
+- Canonical `youtube_channels` and `videos` rows are shared. User subscriptions and libraries are relationships, so media is not duplicated per user.
+- `.strm` files contain a stable backend capability URL, never YouTube. The bridge produces a finite HLS VOD manifest and routes every segment through its cache.
+- `FragmentManager` uses deterministic fragment paths, atomic writes and single-flight fetches per `(video, format, fragment)`. A seek asks only for the target fragment; expired URLs are refreshed through yt-dlp.
+- `stream_quality` selects one shared direct-play source representation. Jellyfin's bitrate menu is not the source-quality selector.
+
+## Jellyfin
+
+Set clients to a Direct Play-friendly/Maximum setting. Configure a Jellyfin library per user path (for example `/data/users/eric`) and restrict that library to its matching Jellyfin account. FinTube never gives Jellyfin a YouTube URL.
+
+The admin settings `jellyfin_url` and `jellyfin_api_key` enable the REST integration. `jellyfin_auto_refresh` coalesces refresh requests after generated `.strm`/`.nfo` files, and `jellyfin_runtime_sync` updates the scanned item's runtime in Jellyfin ticks (`seconds * 10,000,000`) once the item is visible. The admin API exposes `GET /api/admin/jellyfin/status`, `POST /api/admin/jellyfin/validate`, and `POST /api/admin/jellyfin/refresh` (the `/sync` alias is also available). Status responses include connectivity, server/version, scan and runtime-sync counters, but never include the API key.
+
+## Verification
 
 ```bash
-cd client
-npm install
-npm start
+cd server && ./mvnw test
+cd ../client && npm run build
 ```
-
-Open http://localhost:4200. The API is available at http://localhost:8080/api/hello and the health probe at http://localhost:8080/actuator/health.
-
-## Production build and container
-
-```bash
-cd server
-./mvnw package
-docker build -t fintube-server:local .
-docker run --rm -p 8080:8080 fintube-server:local
-```
-
-The Spring Boot server serves the compiled Angular application in production.
-
-## Release
-
-Set your registry path, authenticate Docker to that registry, then run:
-
-```bash
-cd server
-IMAGE_REPOSITORY=ghcr.io/YOUR_GITHUB_USERNAME/fintube-server ./deploy/release.sh 0.1.0
-```
-
-The release script builds a fresh full-stack artifact, publishes `linux/amd64` and `linux/arm64` images, and creates a local annotated Git tag. Push the tag after reviewing it.
