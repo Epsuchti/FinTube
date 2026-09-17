@@ -1,0 +1,7 @@
+{
+  "ngVersion": "21.2.0",
+  "providedInRoot": true,
+  "stringEnums": true,
+  "useSingleRequestParameter": true,
+  "withInterfaces": true
+}

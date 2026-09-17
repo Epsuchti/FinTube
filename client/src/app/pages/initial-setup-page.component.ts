@@ -1,0 +1,3 @@
+import {ChangeDetectionStrategy, Component, EventEmitter, Input, Output} from '@angular/core'; import {FormsModule} from '@angular/forms';
+export interface InitialAdminSubmission {token:string;username:string;email:string;password:string;confirmation:string;}
+@Component({selector:'ft-initial-setup-page',standalone:true,imports:[FormsModule],changeDetection:ChangeDetectionStrategy.OnPush,templateUrl:'./initial-setup-page.component.html'}) export class InitialSetupPageComponent { @Input() loading=false; @Output() create=new EventEmitter<InitialAdminSubmission>(); token='';username='';email='';password='';confirmation=''; submit():void{this.create.emit({token:this.token,username:this.username,email:this.email,password:this.password,confirmation:this.confirmation});} }

@@ -1,0 +1,53 @@
+openapi: 3.0.3
+info:
+  title: FinTube playback API
+  version: 1.0.0
+servers:
+  - url: /
+paths:
+  /play/{video}:
+    get:
+      tags: [ Playback ]
+      operationId: getPlaybackManifest
+      parameters:
+        - name: video
+          in: path
+          required: true
+          schema: { type: string }
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Stable VOD HLS manifest
+          content:
+            application/vnd.apple.mpegurl:
+              schema: { type: string }
+        '404': { description: Video or token not found }
+  /play/{video}/fragment/{fragment}:
+    get:
+      tags: [ Playback ]
+      operationId: getPlaybackFragment
+      parameters:
+        - name: video
+          in: path
+          required: true
+          schema: { type: string }
+        - name: fragment
+          in: path
+          required: true
+          schema: { type: string }
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Fragment bytes
+          content:
+            video/mp2t: { schema: { type: string, format: binary } }
+            video/mp4: { schema: { type: string, format: binary } }
+            video/webm: { schema: { type: string, format: binary } }
+        '404':
+          description: Video, token, or fragment not found
