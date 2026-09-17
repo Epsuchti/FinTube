@@ -28,6 +28,12 @@ Set clients to a Direct Play-friendly/Maximum setting. Configure a Jellyfin libr
 
 The admin settings `jellyfin_url` and `jellyfin_api_key` enable the REST integration. `jellyfin_auto_refresh` coalesces refresh requests after generated `.strm`/`.nfo` files, and `jellyfin_runtime_sync` updates the scanned item's runtime in Jellyfin ticks (`seconds * 10,000,000`) once the item is visible. The admin API exposes `GET /api/admin/jellyfin/status`, `POST /api/admin/jellyfin/validate`, and `POST /api/admin/jellyfin/refresh` (the `/sync` alias is also available). Status responses include connectivity, server/version, scan and runtime-sync counters, but never include the API key.
 
+## YouTube cookies and PO tokens
+
+Both are optional administrator settings. `cookie_file` passes an exported Netscape cookie file to yt-dlp; it is encrypted at rest and never returned by the API. `youtube_po_token` accepts yt-dlp's `CLIENT.CONTEXT+TOKEN` value (for example `mweb.gvs+…`) and `youtube_player_client` selects the matching client.
+
+The Compose deployment enables `youtube_po_token_provider_enabled` by default and installs the BgUtils yt-dlp plugin. Its default `youtube_po_token_provider_args` points to the internal `pot-provider` service. The provider has no host port and must stay that way: it is unauthenticated. Bare-metal deployments can install `bgutil-ytdlp-pot-provider` beside yt-dlp and set its documented provider endpoint, or set `youtube_po_token_provider_enabled=false`; FinTube retries a probe without the provider if it is unavailable. Provider arguments and manual tokens are encrypted and never passed through a shell. See the [yt-dlp PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide) and the [BgUtils provider instructions](https://github.com/Brainicism/bgutil-ytdlp-pot-provider).
+
 ## Verification
 
 ```bash

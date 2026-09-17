@@ -67,11 +67,11 @@ export class AppComponent implements OnInit {
   newPasswordConfirmation = '';
   channel = '';
 
-  readonly secretSettings = new Set(['youtube_api_key', 'jellyfin_api_key', 'proxy_password', 'cookie_file']);
+  readonly secretSettings = new Set(['youtube_api_key', 'jellyfin_api_key', 'proxy_password', 'cookie_file', 'youtube_po_token', 'youtube_po_token_provider_args']);
   readonly settingGroups: Array<{ title: string; keys: string[] }> = [
     { title: 'Playback', keys: ['stream_quality', 'allowed_video_codecs', 'preferred_video_codecs', 'allowed_audio_codecs', 'preferred_audio_codecs', 'public_base_url'] },
     { title: 'Cache', keys: ['cache_retention_days', 'cache_min_free_gb', 'background_download_max_mbps'] },
-    { title: 'YouTube', keys: ['youtube_api_key', 'initial_channel_import_count', 'subscription_sync_minutes'] },
+    { title: 'YouTube', keys: ['youtube_api_key', 'initial_channel_import_count', 'subscription_sync_minutes', 'youtube_player_client', 'youtube_po_token_provider_enabled', 'youtube_po_token', 'youtube_po_token_provider_args'] },
     { title: 'Jellyfin', keys: ['jellyfin_enabled', 'jellyfin_url', 'jellyfin_api_key', 'jellyfin_auto_refresh', 'jellyfin_runtime_sync', 'jellyfin_request_timeout_seconds'] },
     { title: 'Network and yt-dlp', keys: ['yt_dlp_path', 'ffmpeg_path', 'proxy_url', 'proxy_username', 'proxy_password', 'cookie_file'] }
   ];

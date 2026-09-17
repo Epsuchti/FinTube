@@ -57,7 +57,7 @@ import java.util.*;
           "ALTER TABLE jobs ADD COLUMN completed_at TEXT")) {
         try { s.executeUpdate(alter); } catch(SQLException ignored) { }
       }
-      for(String[] d: List.of(new String[]{"stream_quality","720"},new String[]{"cache_retention_days","30"},new String[]{"cache_min_free_gb","20"},new String[]{"background_download_max_mbps","75"},new String[]{"cache_cleanup_interval_minutes","360"},new String[]{"initial_channel_import_count","20"},new String[]{"subscription_sync_minutes","60"},new String[]{"public_base_url","http://localhost:8080"},new String[]{"preferred_video_codecs","av1,vp9,h264"},new String[]{"preferred_audio_codecs","opus,aac"},new String[]{"yt_dlp_path","yt-dlp"},new String[]{"ffmpeg_path","ffmpeg"},new String[]{"jellyfin_enabled","true"},new String[]{"jellyfin_auto_refresh","true"},new String[]{"jellyfin_runtime_sync","true"},new String[]{"jellyfin_request_timeout_seconds","10"})) {
+      for(String[] d: List.of(new String[]{"stream_quality","720"},new String[]{"cache_retention_days","30"},new String[]{"cache_min_free_gb","20"},new String[]{"background_download_max_mbps","75"},new String[]{"cache_cleanup_interval_minutes","360"},new String[]{"initial_channel_import_count","20"},new String[]{"subscription_sync_minutes","60"},new String[]{"public_base_url","http://localhost:8080"},new String[]{"preferred_video_codecs","av1,vp9,h264"},new String[]{"preferred_audio_codecs","opus,aac"},new String[]{"yt_dlp_path","yt-dlp"},new String[]{"ffmpeg_path","ffmpeg"},new String[]{"youtube_player_client","default,mweb"},new String[]{"youtube_po_token",""},new String[]{"youtube_po_token_provider_enabled","true"},new String[]{"youtube_po_token_provider_args","youtubepot-bgutilhttp:base_url=http://pot-provider:4416"},new String[]{"jellyfin_enabled","true"},new String[]{"jellyfin_auto_refresh","true"},new String[]{"jellyfin_runtime_sync","true"},new String[]{"jellyfin_request_timeout_seconds","10"})) {
         try(PreparedStatement p=c.prepareStatement("INSERT OR IGNORE INTO settings(key,value,updated_at) VALUES(?,?,datetime('now'))")){p.setString(1,d[0]);p.setString(2,d[1]);p.executeUpdate();}
       }
       migratePlaintextSecrets(c);
@@ -127,13 +127,13 @@ import java.util.*;
 
   private void migratePlaintextSecrets(Connection c) throws Exception {
     List<String[]> pending = new ArrayList<>();
-    try (PreparedStatement q=c.prepareStatement("SELECT key,value FROM settings WHERE secret=1 OR key IN ('youtube_api_key','jellyfin_api_key','proxy_password','cookie_file')"); ResultSet r=q.executeQuery()) {
+    try (PreparedStatement q=c.prepareStatement("SELECT key,value FROM settings WHERE secret=1 OR key IN ('youtube_api_key','jellyfin_api_key','proxy_password','cookie_file','youtube_po_token','youtube_po_token_provider_args')"); ResultSet r=q.executeQuery()) {
       while(r.next()) if (!r.getString(2).startsWith(ENCRYPTED_PREFIX)) pending.add(new String[]{r.getString(1),r.getString(2)});
     }
     for (String[] entry : pending) try (PreparedStatement u=c.prepareStatement("UPDATE settings SET value=?,updated_at=? WHERE key=?")) {
       u.setString(1,encrypt(entry[1])); u.setString(2,now()); u.setString(3,entry[0]); u.executeUpdate();
     }
-    try (PreparedStatement u=c.prepareStatement("UPDATE settings SET secret=1 WHERE key IN ('youtube_api_key','jellyfin_api_key','proxy_password','cookie_file')")) { u.executeUpdate(); }
+    try (PreparedStatement u=c.prepareStatement("UPDATE settings SET secret=1 WHERE key IN ('youtube_api_key','jellyfin_api_key','proxy_password','cookie_file','youtube_po_token','youtube_po_token_provider_args')")) { u.executeUpdate(); }
   }
 
   private String encrypt(String plain) throws SQLException {

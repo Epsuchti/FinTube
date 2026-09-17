@@ -1,0 +1,27 @@
+services:
+  fintube:
+    build:
+      context: ./server
+    ports:
+      - "8080:8080"
+    environment:
+      FINTUBE_DATA_DIR: /data
+      # Set this in .env for deterministic encrypted settings across restores.
+      FINTUBE_SETTINGS_KEY: ${FINTUBE_SETTINGS_KEY:-}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    volumes:
+      - fintube-data:/data
+    depends_on:
+      pot-provider:
+        condition: service_started
+    restart: unless-stopped
+
+  # Deliberately has no published host port. Only FinTube can reach it over
+  # this Compose network; do not expose this unauthenticated service publicly.
+  pot-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:2.0.0-node
+    restart: unless-stopped
+
+volumes:
+  fintube-data:

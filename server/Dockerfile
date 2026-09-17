@@ -1,7 +1,8 @@
 FROM eclipse-temurin:21-jre
 
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl ffmpeg python3 python3-pip && rm -rf /var/lib/apt/lists/* \
+    && python3 -m pip install --break-system-packages --no-cache-dir --upgrade yt-dlp bgutil-ytdlp-pot-provider
 
 ARG JAR_FILE=target/fintube-server-*.jar
 COPY ${JAR_FILE} app.jar

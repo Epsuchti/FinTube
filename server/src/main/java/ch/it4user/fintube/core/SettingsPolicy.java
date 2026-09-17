@@ -16,14 +16,14 @@ public final class SettingsPolicy {
     private static final Pattern INTEGER = Pattern.compile("[0-9]{1,9}");
     private static final Pattern CODECS = Pattern.compile("[A-Za-z0-9._+,-]{1,200}");
     private static final Set<String> SECRET_KEYS = Set.of(
-            "youtube_api_key", "jellyfin_api_key", "proxy_password", "cookie_file");
+            "youtube_api_key", "jellyfin_api_key", "proxy_password", "cookie_file", "youtube_po_token", "youtube_po_token_provider_args");
     private static final Set<String> ALLOWED_KEYS = Set.of(
             "stream_quality", "cache_retention_days", "cache_min_free_gb",
             "background_download_max_mbps", "cache_cleanup_interval_minutes", "initial_channel_import_count",
             "subscription_sync_minutes", "public_base_url", "preferred_video_codecs",
             "preferred_audio_codecs", "youtube_api_key", "jellyfin_url", "jellyfin_api_key",
             "jellyfin_enabled", "jellyfin_auto_refresh", "jellyfin_runtime_sync", "jellyfin_request_timeout_seconds",
-            "yt_dlp_path", "ffmpeg_path", "proxy_url", "proxy_username", "proxy_password", "cookie_file",
+            "yt_dlp_path", "ffmpeg_path", "proxy_url", "proxy_username", "proxy_password", "cookie_file", "youtube_po_token", "youtube_po_token_provider_args", "youtube_po_token_provider_enabled", "youtube_player_client",
             "allowed_video_codecs", "allowed_audio_codecs");
     private static final Set<String> QUALITY_VALUES = Set.of("480", "720", "1080", "1440", "2160", "best", "best-compatible");
 
@@ -45,12 +45,13 @@ public final class SettingsPolicy {
                 case "cache_cleanup_interval_minutes" -> integerInRange(key, value, 1, 10080);
                 case "initial_channel_import_count" -> integerInRange(key, value, 0, 1000);
                 case "subscription_sync_minutes" -> integerInRange(key, value, 1, 10080);
-                case "jellyfin_enabled", "jellyfin_auto_refresh", "jellyfin_runtime_sync" -> require("true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value), key + " must be true or false");
+                case "jellyfin_enabled", "jellyfin_auto_refresh", "jellyfin_runtime_sync", "youtube_po_token_provider_enabled" -> require("true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value), key + " must be true or false");
                 case "jellyfin_request_timeout_seconds" -> integerInRange(key, value, 1, 120);
                 case "public_base_url", "jellyfin_url" -> url(key, value, Set.of("http", "https"));
                 case "proxy_url" -> url(key, value, Set.of("http", "https", "socks5"));
                 case "preferred_video_codecs", "preferred_audio_codecs", "allowed_video_codecs", "allowed_audio_codecs" -> require(CODECS.matcher(value).matches(), key + " contains invalid codec characters");
-                case "youtube_api_key", "jellyfin_api_key", "proxy_password", "cookie_file", "yt_dlp_path", "ffmpeg_path", "proxy_username" -> require(value.length() <= 4096, key + " is too long");
+                case "youtube_po_token_provider_args", "youtube_player_client" -> require(value.length() <= 4096 && !value.matches(".*[\\r\\n\\u0000].*"), key + " contains invalid characters");
+                case "youtube_api_key", "jellyfin_api_key", "proxy_password", "cookie_file", "youtube_po_token", "yt_dlp_path", "ffmpeg_path", "proxy_username" -> require(value.length() <= 4096, key + " is too long");
                 default -> throw new IllegalArgumentException("unsupported setting: " + key);
             }
         }

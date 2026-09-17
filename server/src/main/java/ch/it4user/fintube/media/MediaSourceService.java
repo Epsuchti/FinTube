@@ -145,9 +145,25 @@ public class MediaSourceService {
     if (proxy != null && !proxy.isBlank()) command.addAll(List.of("--proxy", proxy));
     String cookieFile = settings.get("cookie_file");
     if (cookieFile != null && !cookieFile.isBlank()) command.addAll(List.of("--cookies", cookieFile));
+    String playerClient = settings.get("youtube_player_client");
+    String poToken = settings.get("youtube_po_token");
+    String providerArgs = "true".equalsIgnoreCase(settings.getOrDefault("youtube_po_token_provider_enabled", "true")) ? settings.get("youtube_po_token_provider_args") : "";
+    if (playerClient != null && !playerClient.isBlank()) command.addAll(List.of("--extractor-args", "youtube:player_client=" + playerClient));
+    if (poToken != null && !poToken.isBlank()) command.addAll(List.of("--extractor-args", "youtube:po_token=" + poToken));
+    // Provider plugins are discovered by yt-dlp itself. This option only forwards
+    // their documented extractor arguments; it never executes a shell command.
+    if (providerArgs != null && !providerArgs.isBlank()) command.addAll(List.of("--extractor-args", providerArgs));
     command.add("https://www.youtube.com/watch?v=" + URLEncoder.encode(video, StandardCharsets.UTF_8));
     Process p = new ProcessBuilder(command).redirectErrorStream(true).start();
     byte[] out = p.getInputStream().readAllBytes();
+    if (p.waitFor() != 0 && providerArgs != null && !providerArgs.isBlank()) {
+      // Provider plugins are optional outside the Compose deployment. Retry
+      // without this provider only; cookies/manual tokens remain intact.
+      int index = command.lastIndexOf(providerArgs);
+      if (index > 0 && "--extractor-args".equals(command.get(index - 1))) { command.remove(index); command.remove(index - 1); }
+      p = new ProcessBuilder(command).redirectErrorStream(true).start();
+      out = p.getInputStream().readAllBytes();
+    }
     if (p.waitFor() != 0) throw new IllegalStateException("yt-dlp probe failed");
     JsonNode root = json.readTree(out);
     Source selected = select(root);
@@ -221,18 +237,15 @@ public class MediaSourceService {
     // Fragmented progressive streams retain the complete timeline and can be
     // fetched by segment. Prefer them over a single full-file URL.
     List<Candidate> fragmentedProgressive = progressive.stream()
-        .filter(c -> c.node().path("fragments").isArray() && c.node().path("fragments").size() > 0).toList();
+        .filter(this::seekable).toList();
     if (!fragmentedProgressive.isEmpty()) return makeSource(root, fragmentedProgressive.get(0), null, true);
 
     List<Candidate> videos = all.stream().filter(Candidate::hasVideo).filter(c -> !c.hasAudio())
-        .filter(this::directPlayable).sorted(videoOrder).toList();
+        .filter(this::directPlayable).filter(this::seekable).sorted(videoOrder).toList();
     List<Candidate> audios = all.stream().filter(c -> c.hasAudio() && !c.hasVideo())
-        .filter(this::directPlayable).sorted(Comparator.comparingInt(Candidate::codecRank)
+        .filter(this::directPlayable).filter(this::seekable).sorted(Comparator.comparingInt(Candidate::codecRank)
             .thenComparingDouble(Candidate::bitrate).reversed()).toList();
-    if (videos.isEmpty() || audios.isEmpty()) {
-      if (!progressive.isEmpty()) return makeSource(root, progressive.get(0), null, true);
-      throw new IllegalStateException("no compatible video/audio representation available");
-    }
+    if (videos.isEmpty() || audios.isEmpty()) throw new IllegalStateException("no seekable fragmented representation available");
     return makeSource(root, videos.get(0), audios.get(0), false);
   }
 
@@ -240,7 +253,8 @@ public class MediaSourceService {
     String format = progressive ? video.id() : video.id() + "+" + audio.id();
     List<JsonNode> videoParts = parts(video.node());
     List<JsonNode> audioParts = audio == null ? List.of() : parts(audio.node());
-    int count = Math.max(1, videoParts.size());
+    int count = videoParts.size();
+    if (count < 2) throw new IllegalStateException("source has no segment timeline; refusing non-seekable fallback");
     List<Fragment> fragments = new ArrayList<>(count);
     double total = root.path("duration").asDouble(0);
     Instant expiry = expiry(video.node());
@@ -272,6 +286,7 @@ public class MediaSourceService {
     if (format.path("fragments").isArray()) format.path("fragments").forEach(result::add);
     return result;
   }
+  private boolean seekable(Candidate candidate) { return candidate.node().path("fragments").isArray() && candidate.node().path("fragments").size() > 1; }
 
   private boolean directPlayable(Candidate c) {
     if (c.node().path("url").asText("").isBlank() && !c.node().path("fragments").isArray()) return false;
