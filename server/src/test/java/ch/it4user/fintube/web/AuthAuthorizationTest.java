@@ -11,7 +11,7 @@ import jakarta.servlet.http.Cookie;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest(properties="fintube.data-dir=target/fintube-test")
+@SpringBootTest(properties="fintube.data-dir=${user.dir}/target/fintube-test")
 @AutoConfigureMockMvc
 class AuthAuthorizationTest {
  @Autowired MockMvc mvc;

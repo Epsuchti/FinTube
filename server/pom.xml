@@ -15,7 +15,12 @@
   <properties><java.version>21</java.version></properties>
   <dependencies>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webmvc</artifactId></dependency>
-    <dependency><groupId>org.xerial</groupId><artifactId>sqlite-jdbc</artifactId><version>3.49.1.0</version></dependency>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>
+    <dependency><groupId>jakarta.validation</groupId><artifactId>jakarta.validation-api</artifactId></dependency>
+    <dependency><groupId>io.swagger.core.v3</groupId><artifactId>swagger-annotations-jakarta</artifactId><version>2.2.28</version></dependency>
+    <dependency><groupId>org.openapitools</groupId><artifactId>jackson-databind-nullable</artifactId><version>0.2.6</version></dependency>
+    <dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>
+    <dependency><groupId>org.liquibase</groupId><artifactId>liquibase-core</artifactId></dependency>
     <dependency><groupId>org.springframework.security</groupId><artifactId>spring-security-crypto</artifactId><version>6.4.3</version></dependency>
     <dependency><groupId>com.fasterxml.jackson.core</groupId><artifactId>jackson-databind</artifactId></dependency>
     <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-actuator</artifactId></dependency>
@@ -27,6 +32,14 @@
       <plugin>
         <groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId>
         <executions><execution><goals><goal>build-info</goal></goals></execution></executions>
+      </plugin>
+      <plugin>
+        <groupId>org.openapitools</groupId><artifactId>openapi-generator-maven-plugin</artifactId><version>7.12.0</version>
+        <executions><execution><id>generate-openapi-controller-contracts</id><phase>generate-sources</phase><goals><goal>generate</goal></goals>
+          <configuration><inputSpec>${project.basedir}/src/main/openapi/fintube.yaml</inputSpec><generatorName>spring</generatorName><apiPackage>ch.it4user.fintube.api.contract</apiPackage><modelPackage>ch.it4user.fintube.api.contract.model</modelPackage><generateApiTests>false</generateApiTests><generateModelTests>false</generateModelTests><configOptions><interfaceOnly>true</interfaceOnly><useSpringBoot3>true</useSpringBoot3><useTags>true</useTags><skipDefaultInterface>true</skipDefaultInterface></configOptions></configuration>
+        </execution><execution><id>generate-openapi-playback-contract</id><phase>generate-sources</phase><goals><goal>generate</goal></goals>
+          <configuration><inputSpec>${project.basedir}/src/main/openapi/playback.yaml</inputSpec><generatorName>spring</generatorName><apiPackage>ch.it4user.fintube.api.playback.contract</apiPackage><modelPackage>ch.it4user.fintube.api.playback.contract.model</modelPackage><generateApiTests>false</generateApiTests><generateModelTests>false</generateModelTests><configOptions><interfaceOnly>true</interfaceOnly><useSpringBoot3>true</useSpringBoot3><useTags>true</useTags><skipDefaultInterface>true</skipDefaultInterface></configOptions></configuration>
+        </execution></executions>
       </plugin>
       <plugin>
         <groupId>com.github.eirslett</groupId><artifactId>frontend-maven-plugin</artifactId><version>1.15.1</version>

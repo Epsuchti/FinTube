@@ -326,8 +326,7 @@ public class YouTubeSyncService {
     int duration = duration(video.path("contentDetails").path("duration").asText());
     String availability = availability(video.path("status"));
     try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "INSERT INTO videos(video_id,channel_id,title,description,published_at,duration_seconds,is_short,thumbnail_url,availability,metadata_updated_at) "
-            + "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(video_id) DO UPDATE SET channel_id=excluded.channel_id,title=excluded.title,description=excluded.description,published_at=excluded.published_at,duration_seconds=excluded.duration_seconds,is_short=excluded.is_short,thumbnail_url=excluded.thumbnail_url,availability=excluded.availability,metadata_updated_at=excluded.metadata_updated_at")) {
+        "MERGE INTO videos(video_id,channel_id,title,description,published_at,duration_seconds,is_short,thumbnail_url,availability,metadata_updated_at) KEY(video_id) VALUES(?,?,?,?,?,?,?,?,?,?)")) {
       p.setString(1, id);
       p.setString(2, channel);
       p.setString(3, snippet.path("title").asText(""));
@@ -446,14 +445,11 @@ public class YouTubeSyncService {
     Files.writeString(path.resolve("video.nfo"), nfo);
     downloadThumbnail(thumbnail, path.resolve("video-thumb.jpg"));
     try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "INSERT INTO user_videos(user_id,video_id,library_path,playback_token,created_at) VALUES(?,?,?,?,?) "
-            + "ON CONFLICT(user_id,video_id) DO UPDATE SET library_path=excluded.library_path")) {
-      p.setLong(1, user);
-      p.setString(2, video);
-      p.setString(3, path.toString());
-      p.setString(4, token);
-      p.setString(5, Database.now());
-      p.executeUpdate();
+        "UPDATE user_videos SET library_path=? WHERE user_id=? AND video_id=?")) {
+      p.setString(1,path.toString()); p.setLong(2,user); p.setString(3,video);
+      if (p.executeUpdate()==0) try (PreparedStatement i=c.prepareStatement("INSERT INTO user_videos(user_id,video_id,library_path,playback_token,created_at) VALUES(?,?,?,?,?)")) {
+        i.setLong(1,user); i.setString(2,video); i.setString(3,path.toString()); i.setString(4,token); i.setString(5,Database.now()); i.executeUpdate();
+      }
     }
     jellyfin.afterLibraryGeneration(video, path, duration);
   }

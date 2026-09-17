@@ -6,7 +6,6 @@ import org.junit.jupiter.api.io.TempDir;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.sql.PreparedStatement;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -32,24 +31,6 @@ class DatabaseSettingsCryptoTest {
     assertThat(Files.getPosixFilePermissions(temp.resolve("settings.key")))
         .containsExactlyInAnyOrder(java.nio.file.attribute.PosixFilePermission.OWNER_READ,
             java.nio.file.attribute.PosixFilePermission.OWNER_WRITE);
-  }
-
-  @Test
-  void legacyPlaintextSecretsAreMigratedOnStartup() throws Exception {
-    Database first = database();
-    try (var c = first.open(); var p = c.prepareStatement(
-        "INSERT INTO settings(key,value,secret,updated_at) VALUES('proxy_password','legacy-value',0,?)")) {
-      p.setString(1, Database.now());
-      p.executeUpdate();
-    }
-    Database restarted = database();
-    assertThat(restarted.settings(false).get("proxy_password")).isEqualTo("legacy-value");
-    try (var c = restarted.open(); var p = c.prepareStatement("SELECT value,secret FROM settings WHERE key='proxy_password'")) {
-      var r = p.executeQuery();
-      assertThat(r.next()).isTrue();
-      assertThat(r.getString(1)).startsWith("enc:v1:");
-      assertThat(r.getInt(2)).isEqualTo(1);
-    }
   }
 
   private Database database() throws Exception {

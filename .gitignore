@@ -1,16 +1,7 @@
-/.idea/
-# Java
+client/src/app/api-contract.generated.ts
+client/src/app/api/
 server/target/
-server/.mvn/
-
-# Angular / Node
-client/node_modules/
-client/dist/
-client/.angular/
-
-# Local runtime data and environment overrides
-data/
-.env
-.env.*
-!.env.example
+/client/.angular/
+/client/dist/
+/client/node_modules/
 /client/node/

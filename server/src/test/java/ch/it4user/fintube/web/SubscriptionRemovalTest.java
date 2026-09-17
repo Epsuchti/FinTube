@@ -68,7 +68,7 @@ class SubscriptionRemovalTest {
         Path cached = database.cacheRoot.resolve(videoId).resolve("fragment.bin");
         Files.createDirectories(cached.getParent());
         Files.writeString(cached, "shared-media");
-        try (var c = database.open(); var p = c.prepareStatement("INSERT OR REPLACE INTO cache_entries(video_id,format_key,status,last_accessed_at,active_readers,active_writers) VALUES(?,?,?,?,0,0)")) {
+        try (var c = database.open(); var p = c.prepareStatement("MERGE INTO cache_entries(video_id,format_key,status,last_accessed_at,active_readers,active_writers) KEY(video_id) VALUES(?,?,?,?,0,0)")) {
             p.setString(1, videoId); p.setString(2, "137+140"); p.setString(3, "PARTIAL"); p.setString(4, Database.now()); p.executeUpdate();
         }
 
@@ -112,7 +112,7 @@ class SubscriptionRemovalTest {
     }
 
     private void seedChannel(String id) throws Exception {
-        try (var c = database.open(); var p = c.prepareStatement("INSERT OR IGNORE INTO youtube_channels(channel_id,name,url,updated_at) VALUES(?,?,?,?)")) {
+        try (var c = database.open(); var p = c.prepareStatement("MERGE INTO youtube_channels(channel_id,name,url,updated_at) KEY(channel_id) VALUES(?,?,?,?)")) {
             p.setString(1, id); p.setString(2, "Shared Channel"); p.setString(3, "https://www.youtube.com/channel/" + id); p.setString(4, Database.now()); p.executeUpdate();
         }
     }

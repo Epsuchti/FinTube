@@ -1,0 +1,140 @@
+databaseChangeLog:
+  - changeSet:
+      id: 001-initial-schema
+      author: fintube
+      changes:
+        - createTable:
+            tableName: users
+            columns:
+              - column: {name: id, type: bigint, autoIncrement: true, constraints: {primaryKey: true, nullable: false}}
+              - column: {name: username, type: varchar(48), constraints: {nullable: false, unique: true}}
+              - column: {name: email, type: varchar(320), constraints: {unique: true}}
+              - column: {name: password_hash, type: varchar(255), constraints: {nullable: false}}
+              - column: {name: role, type: varchar(16), constraints: {nullable: false}}
+              - column: {name: filesystem_slug, type: varchar(80), constraints: {nullable: false, unique: true}}
+              - column: {name: created_at, type: varchar(64), constraints: {nullable: false}}
+              - column: {name: updated_at, type: varchar(64), constraints: {nullable: false}}
+        - createTable:
+            tableName: sessions
+            columns:
+              - column: {name: token, type: varchar(255), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: user_id, type: bigint, constraints: {nullable: false}}
+              - column: {name: expires_at, type: varchar(64), constraints: {nullable: false}}
+        - createTable:
+            tableName: setup_state
+            columns:
+              - column: {name: key, type: varchar(255), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: value, type: clob, constraints: {nullable: false}}
+              - column: {name: created_at, type: varchar(64), constraints: {nullable: false}}
+        - createTable:
+            tableName: settings
+            columns:
+              - column: {name: key, type: varchar(255), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: value, type: clob, constraints: {nullable: false}}
+              - column: {name: secret, type: integer, defaultValueNumeric: 0, constraints: {nullable: false}}
+              - column: {name: updated_at, type: varchar(64), constraints: {nullable: false}}
+        - createTable:
+            tableName: youtube_channels
+            columns:
+              - column: {name: channel_id, type: varchar(255), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: name, type: varchar(512), constraints: {nullable: false}}
+              - column: {name: url, type: varchar(4096)}
+              - column: {name: thumbnail_url, type: varchar(4096)}
+              - column: {name: updated_at, type: varchar(64), constraints: {nullable: false}}
+              - column: {name: last_sync_at, type: varchar(64)}
+              - column: {name: last_successful_sync_at, type: varchar(64)}
+              - column: {name: last_sync_published_at, type: varchar(64)}
+              - column: {name: sync_error, type: clob}
+        - createTable:
+            tableName: youtube_subscriptions
+            columns:
+              - column: {name: id, type: bigint, autoIncrement: true, constraints: {primaryKey: true, nullable: false}}
+              - column: {name: user_id, type: bigint, constraints: {nullable: false}}
+              - column: {name: channel_id, type: varchar(255), constraints: {nullable: false}}
+              - column: {name: enabled, type: integer, defaultValueNumeric: 1, constraints: {nullable: false}}
+              - column: {name: created_at, type: varchar(64), constraints: {nullable: false}}
+              - column: {name: last_checked_at, type: varchar(64)}
+              - column: {name: last_successful_sync_at, type: varchar(64)}
+        - createTable:
+            tableName: videos
+            columns:
+              - column: {name: video_id, type: varchar(255), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: channel_id, type: varchar(255), constraints: {nullable: false}}
+              - column: {name: title, type: varchar(1024), constraints: {nullable: false}}
+              - column: {name: description, type: clob}
+              - column: {name: published_at, type: varchar(64)}
+              - column: {name: duration_seconds, type: integer, constraints: {nullable: false}}
+              - column: {name: is_short, type: integer, defaultValueNumeric: 0, constraints: {nullable: false}}
+              - column: {name: thumbnail_url, type: varchar(4096)}
+              - column: {name: availability, type: varchar(32), defaultValue: AVAILABLE, constraints: {nullable: false}}
+              - column: {name: metadata_updated_at, type: varchar(64), constraints: {nullable: false}}
+        - createTable:
+            tableName: user_videos
+            columns:
+              - column: {name: user_id, type: bigint, constraints: {primaryKey: true, primaryKeyName: pk_user_videos, nullable: false}}
+              - column: {name: video_id, type: varchar(255), constraints: {primaryKey: true, primaryKeyName: pk_user_videos, nullable: false}}
+              - column: {name: library_path, type: varchar(4096), constraints: {nullable: false}}
+              - column: {name: playback_token, type: varchar(255), constraints: {nullable: false, unique: true}}
+              - column: {name: created_at, type: varchar(64), constraints: {nullable: false}}
+        - createTable:
+            tableName: cache_entries
+            columns:
+              - column: {name: video_id, type: varchar(255), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: format_key, type: varchar(255)}
+              - column: {name: status, type: varchar(32), defaultValue: PARTIAL, constraints: {nullable: false}}
+              - column: {name: last_accessed_at, type: varchar(64), constraints: {nullable: false}}
+              - column: {name: active_readers, type: integer, defaultValueNumeric: 0, constraints: {nullable: false}}
+              - column: {name: active_writers, type: integer, defaultValueNumeric: 0, constraints: {nullable: false}}
+              - column: {name: completed_at, type: varchar(64)}
+        - createTable:
+            tableName: cached_fragments
+            columns:
+              - column: {name: video_id, type: varchar(255), constraints: {primaryKey: true, primaryKeyName: pk_cached_fragments, nullable: false}}
+              - column: {name: format_key, type: varchar(255), constraints: {primaryKey: true, primaryKeyName: pk_cached_fragments, nullable: false}}
+              - column: {name: fragment_id, type: varchar(255), constraints: {primaryKey: true, primaryKeyName: pk_cached_fragments, nullable: false}}
+              - column: {name: path, type: varchar(4096), constraints: {nullable: false}}
+              - column: {name: size_bytes, type: bigint, constraints: {nullable: false}}
+              - column: {name: completed, type: integer, defaultValueNumeric: 1, constraints: {nullable: false}}
+              - column: {name: last_accessed_at, type: varchar(64), constraints: {nullable: false}}
+        - createTable:
+            tableName: media_sources
+            columns:
+              - column: {name: video_id, type: varchar(255), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: format_key, type: varchar(255), constraints: {nullable: false}}
+              - column: {name: source_json, type: clob, constraints: {nullable: false}}
+              - column: {name: duration_seconds, type: integer, defaultValueNumeric: 0, constraints: {nullable: false}}
+              - column: {name: expires_at, type: varchar(64)}
+              - column: {name: updated_at, type: varchar(64), constraints: {nullable: false}}
+        - createTable:
+            tableName: jobs
+            columns:
+              - column: {name: id, type: varchar(255), constraints: {primaryKey: true, nullable: false}}
+              - column: {name: video_id, type: varchar(255), constraints: {nullable: false}}
+              - column: {name: status, type: varchar(32), constraints: {nullable: false}}
+              - column: {name: priority, type: integer, constraints: {nullable: false}}
+              - column: {name: created_at, type: varchar(64), constraints: {nullable: false}}
+              - column: {name: error, type: clob}
+              - column: {name: type, type: varchar(32), defaultValue: BACKGROUND_FILL, constraints: {nullable: false}}
+              - column: {name: requested_fragment, type: varchar(255)}
+              - column: {name: completed_fragments, type: integer, defaultValueNumeric: 0, constraints: {nullable: false}}
+              - column: {name: total_fragments, type: integer, defaultValueNumeric: 0, constraints: {nullable: false}}
+              - column: {name: cancel_requested, type: integer, defaultValueNumeric: 0, constraints: {nullable: false}}
+              - column: {name: started_at, type: varchar(64)}
+              - column: {name: updated_at, type: varchar(64)}
+              - column: {name: completed_at, type: varchar(64)}
+        - addForeignKeyConstraint: {baseTableName: sessions, baseColumnNames: user_id, constraintName: fk_sessions_user, referencedTableName: users, referencedColumnNames: id, onDelete: CASCADE}
+        - addForeignKeyConstraint: {baseTableName: youtube_subscriptions, baseColumnNames: user_id, constraintName: fk_subscriptions_user, referencedTableName: users, referencedColumnNames: id, onDelete: CASCADE}
+        - addForeignKeyConstraint: {baseTableName: youtube_subscriptions, baseColumnNames: channel_id, constraintName: fk_subscriptions_channel, referencedTableName: youtube_channels, referencedColumnNames: channel_id}
+        - addUniqueConstraint: {tableName: youtube_subscriptions, columnNames: user_id,channel_id, constraintName: uq_subscription}
+        - addForeignKeyConstraint: {baseTableName: videos, baseColumnNames: channel_id, constraintName: fk_videos_channel, referencedTableName: youtube_channels, referencedColumnNames: channel_id}
+        - addForeignKeyConstraint: {baseTableName: user_videos, baseColumnNames: user_id, constraintName: fk_user_videos_user, referencedTableName: users, referencedColumnNames: id, onDelete: CASCADE}
+        - addForeignKeyConstraint: {baseTableName: user_videos, baseColumnNames: video_id, constraintName: fk_user_videos_video, referencedTableName: videos, referencedColumnNames: video_id, onDelete: CASCADE}
+  - changeSet:
+      id: 002-default-settings
+      author: fintube
+      changes:
+        - loadData:
+            file: db/changelog/initial-settings.csv
+            tableName: settings
+            separator: ','
+            encoding: UTF-8

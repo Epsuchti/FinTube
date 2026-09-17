@@ -8,8 +8,9 @@ services:
       FINTUBE_DATA_DIR: /data
       # Set this in .env for deterministic encrypted settings across restores.
       FINTUBE_SETTINGS_KEY: ${FINTUBE_SETTINGS_KEY:-}
-      ADMIN_USERNAME: ${ADMIN_USERNAME:-}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      # Optional. If absent, the service writes a one-time token to
+      # /data/setup-admin-token until the first administrator is created.
+      FINTUBE_SETUP_ADMIN_TOKEN: ${FINTUBE_SETUP_ADMIN_TOKEN:-}
     volumes:
       - fintube-data:/data
     depends_on:

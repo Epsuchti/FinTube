@@ -304,8 +304,7 @@ public class MediaSourceService {
   private void persist(String video, Source source) throws Exception {
     String text = json.writeValueAsString(encode(source));
     try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-        "INSERT INTO media_sources(video_id,format_key,source_json,duration_seconds,expires_at,updated_at) VALUES(?,?,?,?,?,?) " +
-            "ON CONFLICT(video_id) DO UPDATE SET format_key=excluded.format_key,source_json=excluded.source_json,duration_seconds=excluded.duration_seconds,expires_at=excluded.expires_at,updated_at=excluded.updated_at")) {
+        "MERGE INTO media_sources(video_id,format_key,source_json,duration_seconds,expires_at,updated_at) KEY(video_id) VALUES(?,?,?,?,?,?)")) {
       p.setString(1, video); p.setString(2, source.format()); p.setString(3, text); p.setInt(4, source.duration());
       p.setString(5, source.expiresAt() == null ? null : source.expiresAt().toString()); p.setString(6, Database.now()); p.executeUpdate();
     }

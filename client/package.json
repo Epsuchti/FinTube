@@ -4,8 +4,9 @@
   "private": true,
   "packageManager": "npm@11.6.2",
   "scripts": {
-    "start": "ng serve --proxy-config src/proxy.conf.json",
-    "build": "ng build",
+    "start": "npm run openapi:generate && ng serve --proxy-config src/proxy.conf.json",
+    "build": "npm run openapi:generate && ng build",
+    "openapi:generate": "openapi-generator-cli generate -i ../server/src/main/openapi/fintube.yaml -g typescript-angular -o src/app/api -c openapi-generator.json --skip-validate-spec",
     "watch": "ng build --watch --configuration development"
   },
   "dependencies": {
@@ -26,6 +27,8 @@
     "@angular/build": "^21.2.16",
     "@angular/cli": "^21.2.16",
     "@angular/compiler-cli": "^21.2.0",
-    "typescript": "~5.9.2"
+    "openapi-typescript": "^7.13.0",
+    "typescript": "~5.9.2",
+    "@openapitools/openapi-generator-cli": "^2.23.2"
   }
 }

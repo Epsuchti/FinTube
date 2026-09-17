@@ -4,15 +4,15 @@ FinTube is a self-hosted, multi-user YouTube-to-Jellyfin bridge. Jellyfin sees o
 
 ## Run
 
-Install `yt-dlp` on the server, then bootstrap the first admin only once:
+Install `yt-dlp` on the server, then create the first administrator through the setup wizard. Set a one-time token before first start (recommended):
 
 ```bash
-ADMIN_USERNAME=admin ADMIN_PASSWORD='change-this-to-a-long-secret' ./server/mvnw -f server/pom.xml spring-boot:run
+FINTUBE_SETUP_ADMIN_TOKEN='use-a-long-random-one-time-token' ./server/mvnw -f server/pom.xml spring-boot:run
 ```
 
-The application is at `http://localhost:8080`. Configure the YouTube Data API key, public bridge URL, Jellyfin values, quality and cache policy in the admin screen. Bootstrap values are ignored after a user exists.
+The application is at `http://localhost:8080`. When no administrator exists, it presents a setup wizard which requires that token. If `FINTUBE_SETUP_ADMIN_TOKEN` is omitted, FinTube generates one at `data/setup-admin-token` with owner-only permissions. The token is hashed in H2, is never returned by the API, and is deleted after the first admin is created. Configure the YouTube Data API key, public bridge URL, Jellyfin values, quality and cache policy in the admin screen afterward.
 
-Persistent state defaults to `./data` and can be relocated with `FINTUBE_DATA_DIR`. It contains a SQLite database, `users/<safe-user-slug>/` Jellyfin trees and the global `cache/` tree. Map each individual user directory as a separate Jellyfin library; do not map the parent `users` directory to every Jellyfin account.
+Persistent state defaults to `./data` and can be relocated with `FINTUBE_DATA_DIR`. It contains a file-backed H2 database (`fintube-h2.mv.db`), `users/<safe-user-slug>/` Jellyfin trees and the global `cache/` tree. Liquibase applies the versioned schema changelogs automatically at startup. Map each individual user directory as a separate Jellyfin library; do not map the parent `users` directory to every Jellyfin account.
 
 `initial_channel_import_count` controls metadata/history import for a newly added channel (default `20`). `newest_videos_to_download` controls optional low-priority media prefetch of each channel's newest videos (default `0`, disabled). Prefetch jobs fill the global shared cache once; they never download separately for each user.
 
@@ -42,3 +42,7 @@ The Compose deployment enables `youtube_po_token_provider_enabled` by default an
 cd server && ./mvnw test
 cd ../client && npm run build
 ```
+
+## OpenAPI controller contracts
+
+The application API contract is defined in `server/src/main/openapi/fintube.yaml`. Maven generates the Spring interfaces during `generate-sources`; the concrete `*ContractController` classes implement those interfaces, so endpoint paths and HTTP verbs are owned by the contract rather than duplicated in controller methods. The Jellyfin-facing playback contract is separate in `server/src/main/openapi/playback.yaml` and generates `PlaybackApi` for `/play/{video}` and its fragment route.

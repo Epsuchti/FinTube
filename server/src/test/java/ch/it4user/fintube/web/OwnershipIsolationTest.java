@@ -143,7 +143,7 @@ class OwnershipIsolationTest {
         try (var c = database.open(); var role = c.prepareStatement("UPDATE users SET role='ADMIN' WHERE id=?")) {
             role.setLong(1, userId);
             role.executeUpdate();
-            try (var secret = c.prepareStatement("INSERT OR REPLACE INTO settings(key,value,secret,updated_at) VALUES(?,?,1,?)")) {
+            try (var secret = c.prepareStatement("MERGE INTO settings(key,value,secret,updated_at) KEY(key) VALUES(?,?,1,?)")) {
                 secret.setString(1, "youtube_api_key");
                 secret.setString(2, "should-not-be-returned");
                 secret.setString(3, Database.now());
@@ -178,7 +178,7 @@ class OwnershipIsolationTest {
     }
 
     private void seedChannel(String channelId, String name) throws Exception {
-        try (var c = database.open(); var p = c.prepareStatement("INSERT OR IGNORE INTO youtube_channels(channel_id,name,url,updated_at) VALUES(?,?,?,?)")) {
+        try (var c = database.open(); var p = c.prepareStatement("MERGE INTO youtube_channels(channel_id,name,url,updated_at) KEY(channel_id) VALUES(?,?,?,?)")) {
             p.setString(1, channelId);
             p.setString(2, name);
             p.setString(3, "https://www.youtube.com/channel/" + channelId);
@@ -188,7 +188,7 @@ class OwnershipIsolationTest {
     }
 
     private void seedSubscription(long userId, String channelId) throws Exception {
-        try (var c = database.open(); var p = c.prepareStatement("INSERT OR IGNORE INTO youtube_subscriptions(user_id,channel_id,created_at) VALUES(?,?,?)")) {
+        try (var c = database.open(); var p = c.prepareStatement("MERGE INTO youtube_subscriptions(user_id,channel_id,created_at) KEY(user_id,channel_id) VALUES(?,?,?)")) {
             p.setLong(1, userId);
             p.setString(2, channelId);
             p.setString(3, Database.now());
@@ -197,7 +197,7 @@ class OwnershipIsolationTest {
     }
 
     private String latestChannelId() throws Exception {
-        try (var c = database.open(); var p = c.prepareStatement("SELECT channel_id FROM youtube_channels ORDER BY rowid DESC LIMIT 1"); ResultSet result = p.executeQuery()) {
+        try (var c = database.open(); var p = c.prepareStatement("SELECT channel_id FROM youtube_channels ORDER BY updated_at DESC LIMIT 1"); ResultSet result = p.executeQuery()) {
             assertThat(result.next()).isTrue();
             return result.getString(1);
         }

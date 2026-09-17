@@ -204,7 +204,7 @@ public class FragmentManager {
       }
     }
     // Close the SELECT connection/cursor before opening the independent touch
-    // update connection; this avoids SQLite reader/writer lock contention.
+    // update connection to keep cache reads and writes short-lived.
     touch(video, format, fragment);
     return result;
   }
@@ -297,13 +297,12 @@ public class FragmentManager {
   private void upsert(String video, String format, String fragment, Path path) throws SQLException, IOException {
     String now = Database.now();
     try (Connection c = db.open(); PreparedStatement e = c.prepareStatement(
-        "INSERT INTO cache_entries(video_id,format_key,status,last_accessed_at,active_readers,active_writers) VALUES(?,?, 'PARTIAL',?,0,0) " +
-            "ON CONFLICT(video_id) DO UPDATE SET format_key=excluded.format_key,status=CASE WHEN cache_entries.status='COMPLETE' THEN cache_entries.status ELSE 'PARTIAL' END,last_accessed_at=excluded.last_accessed_at")) {
-      e.setString(1, video); e.setString(2, format); e.setString(3, now); e.executeUpdate();
+        "UPDATE cache_entries SET format_key=?,status=CASE WHEN status='COMPLETE' THEN status ELSE 'PARTIAL' END,last_accessed_at=? WHERE video_id=?")) {
+      e.setString(1, format); e.setString(2, now); e.setString(3, video);
+      if (e.executeUpdate()==0) try (PreparedStatement i=c.prepareStatement("INSERT INTO cache_entries(video_id,format_key,status,last_accessed_at,active_readers,active_writers) VALUES(?,?, 'PARTIAL',?,0,0)")) { i.setString(1,video); i.setString(2,format); i.setString(3,now); i.executeUpdate(); }
     }
     try (Connection c = db.open(); PreparedStatement x = c.prepareStatement(
-        "INSERT INTO cached_fragments(video_id,format_key,fragment_id,path,size_bytes,completed,last_accessed_at) VALUES(?,?,?,?,?,?,?) " +
-            "ON CONFLICT(video_id,format_key,fragment_id) DO UPDATE SET path=excluded.path,size_bytes=excluded.size_bytes,completed=1,last_accessed_at=excluded.last_accessed_at")) {
+        "MERGE INTO cached_fragments(video_id,format_key,fragment_id,path,size_bytes,completed,last_accessed_at) KEY(video_id,format_key,fragment_id) VALUES(?,?,?,?,?,?,?)")) {
       x.setString(1, video); x.setString(2, format); x.setString(3, fragment); x.setString(4, path.toString());
       x.setLong(5, Files.size(path)); x.setInt(6, 1); x.setString(7, now); x.executeUpdate();
     }
@@ -323,10 +322,9 @@ public class FragmentManager {
   private void markActive(String video, String format, int writers, int readers) throws SQLException {
     synchronized (EVICTION_LOCK) {
       try (Connection c = db.open(); PreparedStatement p = c.prepareStatement(
-          "INSERT INTO cache_entries(video_id,format_key,status,last_accessed_at,active_readers,active_writers) VALUES(?,?, 'PARTIAL',?,?,?) " +
-              "ON CONFLICT(video_id) DO UPDATE SET format_key=excluded.format_key,active_readers=MAX(0,cache_entries.active_readers+?),active_writers=MAX(0,cache_entries.active_writers+?),last_accessed_at=excluded.last_accessed_at")) {
-        p.setString(1, video); p.setString(2, format); p.setString(3, Database.now()); p.setInt(4, Math.max(readers, 0)); p.setInt(5, Math.max(writers, 0));
-        p.setInt(6, readers); p.setInt(7, writers); p.executeUpdate();
+          "UPDATE cache_entries SET format_key=?,active_readers=GREATEST(0,active_readers+?),active_writers=GREATEST(0,active_writers+?),last_accessed_at=? WHERE video_id=?")) {
+        p.setString(1, format); p.setInt(2, readers); p.setInt(3, writers); p.setString(4, Database.now()); p.setString(5, video);
+        if (p.executeUpdate()==0) try (PreparedStatement i=c.prepareStatement("INSERT INTO cache_entries(video_id,format_key,status,last_accessed_at,active_readers,active_writers) VALUES(?,?, 'PARTIAL',?,?,?)")) { i.setString(1,video); i.setString(2,format); i.setString(3,Database.now()); i.setInt(4,Math.max(readers,0)); i.setInt(5,Math.max(writers,0)); i.executeUpdate(); }
       }
     }
   }
