@@ -27,7 +27,7 @@
       </nav>
       <section class="content">
         @if (section() === 'subscriptions') {
-          <ft-subscriptions-page />
+          <ft-subscriptions-page (videoCountChange)="videoCount.set($event)" />
         }
         @if (section() === 'videos') {
           <ft-videos-page (manageChannels)="setSection('subscriptions')" (videoCountChange)="videoCount.set($event)" />

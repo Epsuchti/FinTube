@@ -53,7 +53,6 @@ class FragmentManagerTest {
   @DynamicPropertySource
   static void dataProperties(DynamicPropertyRegistry registry) {
     registry.add("fintube.data-dir", TEST_DATA_DIR::toString);
-    registry.add("fintube.setup-admin-token", () -> "fragment-manager-test-token");
   }
 
   @BeforeEach
@@ -77,6 +76,32 @@ class FragmentManagerTest {
       requests.incrementAndGet();
       try { Thread.sleep(100); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
       byte[] bytes = "fragment-bytes".getBytes();
+      exchange.sendResponseHeaders(200, bytes.length);
+      try (var out = exchange.getResponseBody()) { out.write(bytes); }
+    });
+    server.createContext("/video.m3u8", exchange -> {
+      byte[] bytes = """
+          #EXTM3U
+          #EXT-X-TARGETDURATION:6
+          #EXTINF:6,
+          video/0.ts
+          #EXTINF:6,
+          video/1.ts
+          #EXT-X-ENDLIST
+          """.getBytes();
+      exchange.sendResponseHeaders(200, bytes.length);
+      try (var out = exchange.getResponseBody()) { out.write(bytes); }
+    });
+    server.createContext("/audio.m3u8", exchange -> {
+      byte[] bytes = """
+          #EXTM3U
+          #EXT-X-TARGETDURATION:6
+          #EXTINF:6,
+          audio/0.ts
+          #EXTINF:6,
+          audio/1.ts
+          #EXT-X-ENDLIST
+          """.getBytes();
       exchange.sendResponseHeaders(200, bytes.length);
       try (var out = exchange.getResponseBody()) { out.write(bytes); }
     });
@@ -138,6 +163,25 @@ class FragmentManagerTest {
     assertEquals("aac", selected.audioCodec());
     assertEquals(2, selected.fragments().size());
     assertNotNull(selected.fragments().get(1).audioUrl());
+    assertFalse(selected.progressive());
+  }
+
+  @Test
+  void sourceSelectorParsesHlsMediaPlaylists() throws Exception {
+    MediaSourceService service = new MediaSourceService(settings, mediaSources);
+    String base = "http://127.0.0.1:" + server.getAddress().getPort();
+    var root = new ObjectMapper().readTree("""
+        {"duration":12,"formats":[
+          {"format_id":"311","height":720,"vcodec":"avc1.640020","acodec":"none","ext":"mp4","protocol":"m3u8_native","url":"%s/video.m3u8"},
+          {"format_id":"234","height":0,"vcodec":"none","acodec":null,"ext":"mp4","protocol":"m3u8_native","url":"%s/audio.m3u8"}
+        ]}
+        """.formatted(base, base));
+
+    MediaSourceService.Source selected = service.select(root);
+    assertEquals("311+234", selected.format());
+    assertEquals(2, selected.fragments().size());
+    assertEquals("http://127.0.0.1:" + server.getAddress().getPort() + "/audio/1.ts",
+        selected.fragments().get(1).audioUrl().toString());
     assertFalse(selected.progressive());
   }
 

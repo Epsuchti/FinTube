@@ -10,6 +10,10 @@ import ch.it4user.fintube.persistence.entities.YouTubeChannelEntity;
 import ch.it4user.fintube.persistence.repositories.YouTubeChannelRepository;
 import ch.it4user.fintube.persistence.entities.YouTubeSubscriptionEntity;
 import ch.it4user.fintube.persistence.repositories.YouTubeSubscriptionRepository;
+import ch.it4user.fintube.persistence.entities.UserVideoEntity;
+import ch.it4user.fintube.persistence.entities.VideoEntity;
+import ch.it4user.fintube.persistence.repositories.UserVideoRepository;
+import ch.it4user.fintube.persistence.repositories.VideoRepository;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,6 +36,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -49,6 +54,8 @@ class OwnershipIsolationTest {
     @Autowired UserRepository users;
     @Autowired YouTubeChannelRepository channels;
     @Autowired YouTubeSubscriptionRepository subscriptions;
+    @Autowired UserVideoRepository userVideos;
+    @Autowired VideoRepository videos;
     @Autowired SettingsService settings;
 
     @DynamicPropertySource
@@ -117,6 +124,34 @@ class OwnershipIsolationTest {
 
         assertThat(channels.findById(channelId)).isPresent();
         assertThat(subscriptions.findByChannelIdAndEnabled(channelId, 1)).hasSize(2);
+    }
+
+    @Test
+    void videosEndpointProjectsDescriptionsStoredAsClobs() throws Exception {
+        String username = unique("videos");
+        Cookie session = register(username, "videos password that is long");
+        long userId = userId(username);
+        String channelId = "UC" + UUID.randomUUID().toString().replace("-", "");
+        String videoId = "video-" + UUID.randomUUID().toString().replace("-", "");
+        seedChannel(channelId, "Video Channel");
+        seedSubscription(userId, channelId);
+        videos.save(new VideoEntity(videoId, channelId, "Video title", "A description stored in a CLOB",
+                "2026-09-17T12:00:00Z", 120, 0, "", "AVAILABLE", ApplicationClock.now()));
+        Path libraryPath = paths.usersRoot.resolve(username).resolve(videoId);
+        byte[] thumbnail = "thumbnail-bytes".getBytes();
+        Files.createDirectories(libraryPath);
+        Files.write(libraryPath.resolve("video-thumb.jpg"), thumbnail);
+        userVideos.save(new UserVideoEntity(userId, videoId, libraryPath.toString(),
+                "playback-token-" + videoId, ApplicationClock.now()));
+
+        mvc.perform(get("/api/videos").cookie(session))
+                .andExpect(status().isOk())
+                .andExpect(result -> assertThat(result.getResponse().getContentAsString())
+                        .contains("A description stored in a CLOB"));
+        mvc.perform(get("/api/videos/" + videoId + "/thumbnail").cookie(session))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType("image/jpeg"))
+                .andExpect(content().bytes(thumbnail));
     }
 
     @Test

@@ -281,9 +281,15 @@ public class FragmentManager {
 
   private Path remux(Path video, Path audio, Path output) throws Exception {
     String ffmpeg = setting("ffmpeg_path", "ffmpeg");
-    Process process = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-i", video.toString(),
-        "-i", audio.toString(), "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-f", "mpegts", "-y", output.toString())
-        .redirectErrorStream(true).start();
+    Process process;
+    try {
+      process = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-i", video.toString(),
+          "-i", audio.toString(), "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-f", "mpegts", "-y", output.toString())
+          .redirectErrorStream(true).start();
+    } catch (IOException e) {
+      throw new IOException("ffmpeg executable is unavailable: " + ffmpeg
+          + ". Install ffmpeg or set the ffmpeg_path setting to its absolute path.", e);
+    }
     byte[] outputLog = process.getInputStream().readAllBytes();
     if (process.waitFor() != 0 || !Files.isRegularFile(output) || Files.size(output) == 0)
       throw new IOException("stream-copy remux failed" + (outputLog.length == 0 ? "" : ": " + new String(outputLog)));

@@ -7,15 +7,22 @@ import ch.it4user.fintube.api.contract.model.ToggleSubscriptionRequest;
 import ch.it4user.fintube.api.contract.model.Video;
 import ch.it4user.fintube.core.AuditLogger;
 import ch.it4user.fintube.core.ApplicationClock;
+import ch.it4user.fintube.core.ApplicationPaths;
 import ch.it4user.fintube.core.SettingsService;
 import ch.it4user.fintube.integration.YouTubeSyncService;
+import ch.it4user.fintube.persistence.entities.UserVideoEntity;
 import ch.it4user.fintube.persistence.repositories.LibraryVideoRepository;
 import ch.it4user.fintube.persistence.entities.YouTubeChannelEntity;
 import ch.it4user.fintube.persistence.repositories.YouTubeChannelRepository;
 import ch.it4user.fintube.persistence.entities.YouTubeSubscriptionEntity;
 import ch.it4user.fintube.persistence.repositories.YouTubeSubscriptionRepository;
+import ch.it4user.fintube.persistence.repositories.UserVideoRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -26,6 +33,8 @@ import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -36,9 +45,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class LibraryApplicationService {
+    private static final Logger LOG = LoggerFactory.getLogger(LibraryApplicationService.class);
     private final SettingsService settings;
+    private final ApplicationPaths paths;
     private final YouTubeChannelRepository channels;
     private final YouTubeSubscriptionRepository subscriptions;
+    private final UserVideoRepository userVideos;
     private final LibraryVideoRepository videos;
     private final AuthorizationService authorization;
     private final YouTubeSyncService sync;
@@ -47,15 +59,19 @@ public class LibraryApplicationService {
     private final HttpClient http = HttpClient.newHttpClient();
 
     public LibraryApplicationService(SettingsService settings,
+                                     ApplicationPaths paths,
                                      YouTubeChannelRepository channels,
                                      YouTubeSubscriptionRepository subscriptions,
+                                     UserVideoRepository userVideos,
                                      LibraryVideoRepository videos,
                                      AuthorizationService authorization,
                                      YouTubeSyncService sync,
                                      AuditLogger audit) {
         this.settings = settings;
+        this.paths = paths;
         this.channels = channels;
         this.subscriptions = subscriptions;
+        this.userVideos = userVideos;
         this.videos = videos;
         this.authorization = authorization;
         this.sync = sync;
@@ -120,6 +136,7 @@ public class LibraryApplicationService {
             try {
                 discovered = sync.sync(channel, principal.id());
             } catch (Exception e) {
+                LOG.error("Subscription refresh failed for subscriptionId={} channelId={}", id, channel, e);
                 throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "subscription refresh failed", e);
             }
             audit.event("SUBSCRIPTION_REFRESH_COMPLETED", Map.of("userId", principal.id(), "subscriptionId", id, "channelId", channel, "discovered", discovered));
@@ -134,6 +151,22 @@ public class LibraryApplicationService {
             long retention = Long.parseLong(settings.value("cache_retention_days") == null
                     ? "30" : settings.value("cache_retention_days"));
             return items.stream().map(item -> video(item, retention)).toList();
+        });
+    }
+
+    public Resource thumbnail(HttpServletRequest request, String video) {
+        return database(() -> {
+            AuthService.Principal principal = authorization.requireUser(request);
+            UserVideoEntity link = userVideos.findByIdUserIdAndIdVideoId(principal.id(), video)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+            Path userRoot = paths.usersRoot.resolve(principal.slug()).toAbsolutePath().normalize();
+            Path libraryPath = Path.of(link.getLibraryPath()).toAbsolutePath().normalize();
+            if (!libraryPath.startsWith(userRoot)) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            Path thumbnail = libraryPath.resolve("video-thumb.jpg").normalize();
+            if (!thumbnail.startsWith(userRoot) || !Files.isRegularFile(thumbnail)) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            }
+            return new FileSystemResource(thumbnail);
         });
     }
 
@@ -152,6 +185,7 @@ public class LibraryApplicationService {
                 .publishedAt(value.getPublishedAt())
                 .durationSeconds(value.getDurationSeconds())
                 .channel(value.getChannel())
+                .thumbnailUrl("/api/videos/" + value.getVideoId() + "/thumbnail")
                 .libraryPath(value.getLibraryPath())
                 .cacheStatus(value.getCacheStatus())
                 .cacheLastAccessedAt(accessed)
@@ -181,6 +215,7 @@ public class LibraryApplicationService {
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {
+            LOG.error("Library operation failed", e);
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "library operation could not be completed", e);
         }
     }

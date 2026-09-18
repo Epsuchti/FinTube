@@ -31,7 +31,7 @@ public interface LibraryVideoRepository extends Repository<VideoEntity, String> 
     @Query(value = """
             SELECT v.video_id AS videoId,
                    v.title AS title,
-                   v.description AS description,
+                   CAST(v.description AS VARCHAR) AS description,
                    v.published_at AS publishedAt,
                    v.duration_seconds AS durationSeconds,
                    c.name AS channel,

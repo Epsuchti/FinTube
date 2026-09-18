@@ -140,9 +140,9 @@ public class YouTubeSyncService {
           String videoId = video.path("id").asText();
           if (videoId.isBlank()) continue;
           returned.add(videoId);
-          upsertVideo(video, channel);
+          boolean newVideo = upsertVideo(video, channel);
           newestPublished = maxPublished(newestPublished, video.path("snippet").path("publishedAt").asText());
-          count++;
+          if (newVideo) count++;
         }
       }
 
@@ -242,9 +242,9 @@ public class YouTubeSyncService {
   }
 
   private String channelCursor(String channel) {
-    return channels.findById(channel)
-        .map(YouTubeChannelEntity::getLastSyncPublishedAt)
+    YouTubeChannelEntity entity = channels.findById(channel)
         .orElseThrow(() -> new IllegalArgumentException("unknown YouTube channel " + channel));
+    return entity.getLastSyncPublishedAt();
   }
 
   private void markChannelAttempt(String channel, String at) {
@@ -296,13 +296,16 @@ public class YouTubeSyncService {
     }
   }
 
-  private void upsertVideo(JsonNode video, String channel) throws Exception {
+  private boolean upsertVideo(JsonNode video, String channel) throws Exception {
     String id = video.path("id").asText();
     JsonNode snippet = video.path("snippet");
     int duration = duration(video.path("contentDetails").path("duration").asText());
     String availability = availability(video.path("status"));
-    VideoEntity entity = videos.findById(id).orElseGet(() -> new VideoEntity(
-        id, channel, "", "", null, 0, 0, "", "AVAILABLE", now()));
+    VideoEntity entity = videos.findById(id).orElse(null);
+    boolean newVideo = entity == null;
+    if (entity == null) {
+      entity = new VideoEntity(id, channel, "", "", null, 0, 0, "", "AVAILABLE", now());
+    }
     entity.setChannelId(channel);
     entity.setTitle(snippet.path("title").asText(""));
     entity.setDescription(snippet.path("description").asText(""));
@@ -313,6 +316,7 @@ public class YouTubeSyncService {
     entity.setAvailability(availability);
     entity.setMetadataUpdatedAt(now());
     videos.save(entity);
+    return newVideo;
   }
 
   private void markMissingAsUnavailable(String channel, List<String> ids, Set<String> returned) {

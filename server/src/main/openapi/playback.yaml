@@ -16,7 +16,7 @@ paths:
           schema: { type: string }
         - name: token
           in: query
-          required: true
+          required: false
           schema: { type: string }
       responses:
         '200':

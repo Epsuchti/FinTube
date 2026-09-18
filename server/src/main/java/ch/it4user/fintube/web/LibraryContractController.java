@@ -7,6 +7,8 @@ import ch.it4user.fintube.api.contract.model.AddSubscriptionRequest;
 import ch.it4user.fintube.api.contract.model.RefreshResult;
 import ch.it4user.fintube.api.contract.model.ToggleSubscriptionRequest;
 import ch.it4user.fintube.api.contract.model.Video;
+import org.springframework.core.io.Resource;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -40,6 +42,11 @@ public class LibraryContractController implements LibraryApi {
     @Override
     public ResponseEntity<List<Video>> listVideos() {
         return ResponseEntity.ok(library.videos(requestContext));
+    }
+
+    @Override
+    public ResponseEntity<Resource> getVideoThumbnail(String video) {
+        return ResponseEntity.ok().contentType(MediaType.IMAGE_JPEG).body(library.thumbnail(requestContext, video));
     }
 
     @Override

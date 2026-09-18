@@ -3,12 +3,15 @@ package ch.it4user.fintube.integration;
 import ch.it4user.fintube.core.SettingsService;
 import ch.it4user.fintube.persistence.repositories.YouTubeSubscriptionRepository;
 import java.time.Instant;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /** A failed channel is isolated and one API sync serves all its subscribers. */
 @Component
 public class SubscriptionScheduler {
+  private static final Logger LOG = LoggerFactory.getLogger(SubscriptionScheduler.class);
   private final SettingsService settings;
   private final YouTubeSubscriptionRepository subscriptions;
   private final YouTubeSyncService sync;
@@ -28,11 +31,13 @@ public class SubscriptionScheduler {
       for (String channel : subscriptions.findDueChannelIds(cutoff)) {
         try {
           sync.syncChannel(channel);
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+          LOG.error("Scheduled subscription sync failed for channel={}", channel, e);
           // A channel failure is isolated; the scheduler must remain alive.
         }
       }
-    } catch (Exception ignored) {
+    } catch (Exception e) {
+      LOG.error("Scheduled subscription sync run failed", e);
       // A repository failure must not stop future scheduled runs.
     }
   }

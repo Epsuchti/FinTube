@@ -18,6 +18,38 @@ interface SettingGroup {
 export class AdminSettingsPageComponent implements OnInit {
     private readonly adminApi = inject(AdminService);
 
+    readonly settingLabels: Record<string, string> = {
+        stream_quality: 'Stream quality',
+        allowed_video_codecs: 'Allowed video codecs',
+        preferred_video_codecs: 'Preferred video codecs',
+        allowed_audio_codecs: 'Allowed audio codecs',
+        preferred_audio_codecs: 'Preferred audio codecs',
+        public_base_url: 'Public base URL',
+        cache_retention_days: 'Cache retention (days)',
+        cache_min_free_gb: 'Minimum free cache space (GB)',
+        background_download_max_mbps: 'Background download limit (Mbps)',
+        newest_videos_to_download: 'Newest videos to prefetch',
+        youtube_api_key: 'YouTube Data API key',
+        initial_channel_import_count: 'Initial channel import count',
+        subscription_sync_minutes: 'Subscription sync interval (minutes)',
+        youtube_player_client: 'YouTube player client',
+        youtube_po_token_provider_enabled: 'PO token provider enabled',
+        youtube_po_token: 'YouTube PO token',
+        youtube_po_token_provider_args: 'PO token provider arguments',
+        jellyfin_enabled: 'Jellyfin enabled',
+        jellyfin_url: 'Jellyfin URL',
+        jellyfin_api_key: 'Jellyfin API key',
+        jellyfin_auto_refresh: 'Jellyfin automatic refresh',
+        jellyfin_runtime_sync: 'Jellyfin runtime sync',
+        jellyfin_request_timeout_seconds: 'Jellyfin request timeout (seconds)',
+        yt_dlp_path: 'yt-dlp path',
+        ffmpeg_path: 'FFmpeg path',
+        proxy_url: 'Proxy URL',
+        proxy_username: 'Proxy username',
+        proxy_password: 'Proxy password',
+        cookie_file: 'Cookie file'
+    };
+
     readonly secretSettings = new Set([
         'youtube_api_key',
         'jellyfin_api_key',
@@ -60,6 +92,10 @@ export class AdminSettingsPageComponent implements OnInit {
 
     value(key: string): string {
         return this.settings()[key] ?? '';
+    }
+
+    labelFor(key: string): string {
+        return this.settingLabels[key] ?? key;
     }
 
     setSetting(key: string, value: string): void {

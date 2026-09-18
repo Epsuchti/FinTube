@@ -20,7 +20,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 class SetupWizardTest {
- private static final String TOKEN = "setup-token-for-an-initial-admin-test";
  private static final Path DATA_DIR = tempDirectory();
 
  @Autowired MockMvc mvc;
@@ -28,10 +27,11 @@ class SetupWizardTest {
  @DynamicPropertySource
  static void properties(DynamicPropertyRegistry registry) {
   registry.add("fintube.data-dir", () -> DATA_DIR.toString());
-  registry.add("fintube.setup-admin-token", () -> TOKEN);
  }
 
  @Test void setupRequiresTheOneTimeTokenAndCreatesTheFirstAdmin() throws Exception {
+  String token = Files.readString(DATA_DIR.resolve("setup-admin-token")).trim();
+
   mvc.perform(get("/api/setup/status"))
       .andExpect(status().isOk())
       .andExpect(jsonPath("$.setupRequired").value(true));
@@ -41,7 +41,7 @@ class SetupWizardTest {
       .andExpect(status().isUnauthorized());
 
   mvc.perform(post("/api/setup/create-admin").contentType(MediaType.APPLICATION_JSON)
-          .content("{\"username\":\"first-admin\",\"email\":\"admin@example.test\",\"password\":\"correct horse battery staple\",\"token\":\"" + TOKEN + "\"}"))
+          .content("{\"username\":\"first-admin\",\"email\":\"admin@example.test\",\"password\":\"correct horse battery staple\",\"token\":\"" + token + "\"}"))
       .andExpect(status().isOk())
       .andExpect(jsonPath("$.role").value("ADMIN"))
       .andExpect(cookie().exists("FT_SESSION"));
@@ -50,7 +50,7 @@ class SetupWizardTest {
       .andExpect(status().isOk())
       .andExpect(jsonPath("$.setupRequired").value(false));
   mvc.perform(post("/api/setup/create-admin").contentType(MediaType.APPLICATION_JSON)
-          .content("{\"username\":\"other-admin\",\"password\":\"correct horse battery staple\",\"token\":\"" + TOKEN + "\"}"))
+          .content("{\"username\":\"other-admin\",\"password\":\"correct horse battery staple\",\"token\":\"" + token + "\"}"))
       .andExpect(status().isConflict());
  }
 

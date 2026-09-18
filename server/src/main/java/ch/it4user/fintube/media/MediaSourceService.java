@@ -10,10 +10,17 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -21,6 +28,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -35,6 +43,10 @@ public class MediaSourceService {
   private static final Pattern EXPIRE = Pattern.compile("(?:^|[?&])expire=(\\d+)");
   private final SettingsService settingsService;
   private final MediaSourceRepository mediaSourceRepository;
+  private final HttpClient http = HttpClient.newBuilder()
+      .connectTimeout(Duration.ofSeconds(20))
+      .followRedirects(HttpClient.Redirect.NORMAL)
+      .build();
   private final ObjectMapper json = new ObjectMapper();
   private final ConcurrentHashMap<String, Source> sources = new ConcurrentHashMap<>();
 
@@ -127,6 +139,8 @@ public class MediaSourceService {
     boolean progressive() { return hasVideo() && hasAudio(); }
   }
 
+  private record ProbeResult(int exitCode, byte[] stdout) {}
+
   /** Load a valid persisted probe before invoking yt-dlp after a restart. */
   public Source source(String video) throws Exception {
     Source memory = sources.get(video);
@@ -157,22 +171,47 @@ public class MediaSourceService {
     // their documented extractor arguments; it never executes a shell command.
     if (providerArgs != null && !providerArgs.isBlank()) command.addAll(List.of("--extractor-args", providerArgs));
     command.add("https://www.youtube.com/watch?v=" + URLEncoder.encode(video, StandardCharsets.UTF_8));
-    Process p = new ProcessBuilder(command).redirectErrorStream(true).start();
-    byte[] out = p.getInputStream().readAllBytes();
-    if (p.waitFor() != 0 && providerArgs != null && !providerArgs.isBlank()) {
+    ProbeResult result = runProbe(command, bin);
+    if (result.exitCode() != 0 && providerArgs != null && !providerArgs.isBlank()) {
       // Provider plugins are optional outside the Compose deployment. Retry
       // without this provider only; cookies/manual tokens remain intact.
       int index = command.lastIndexOf(providerArgs);
       if (index > 0 && "--extractor-args".equals(command.get(index - 1))) { command.remove(index); command.remove(index - 1); }
-      p = new ProcessBuilder(command).redirectErrorStream(true).start();
-      out = p.getInputStream().readAllBytes();
+      result = runProbe(command, bin);
     }
-    if (p.waitFor() != 0) throw new IllegalStateException("yt-dlp probe failed");
-    JsonNode root = json.readTree(out);
+    if (result.exitCode() != 0) throw new IllegalStateException("yt-dlp probe failed with exit code " + result.exitCode());
+    JsonNode root = json.readTree(result.stdout());
     Source selected = select(root);
     persist(video, selected);
     sources.put(video, selected);
     return selected;
+  }
+
+  private ProbeResult runProbe(List<String> command, String bin) throws Exception {
+    Process process = startProbe(command, bin);
+    CompletableFuture<byte[]> stdout = CompletableFuture.supplyAsync(() -> read(process.getInputStream()));
+    CompletableFuture<byte[]> stderr = CompletableFuture.supplyAsync(() -> read(process.getErrorStream()));
+    int exitCode = process.waitFor();
+    byte[] output = stdout.join();
+    stderr.join();
+    return new ProbeResult(exitCode, output);
+  }
+
+  private static byte[] read(InputStream stream) {
+    try (stream) {
+      return stream.readAllBytes();
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  private Process startProbe(List<String> command, String bin) throws IOException {
+    try {
+      return new ProcessBuilder(command).redirectErrorStream(false).start();
+    } catch (IOException e) {
+      throw new IllegalStateException("yt-dlp executable is unavailable: " + bin
+          + ". Install yt-dlp or set the yt_dlp_path setting to its absolute path.", e);
+    }
   }
 
   /**
@@ -211,7 +250,7 @@ public class MediaSourceService {
   }
 
   /** Select the best representation under the administrator's quality/codec policy. */
-  public Source select(JsonNode root) {
+  public Source select(JsonNode root) throws Exception {
     String quality = setting("stream_quality", "720").toLowerCase(Locale.ROOT);
     int ceiling = "best".equals(quality) || "best-compatible".equals(quality)
         ? Integer.MAX_VALUE : parseQuality(quality);
@@ -222,8 +261,9 @@ public class MediaSourceService {
 
     List<Candidate> all = new ArrayList<>();
     for (JsonNode f : root.path("formats")) {
-      String vc = codecName(f.path("vcodec").asText("none"));
-      String ac = codecName(f.path("acodec").asText("none"));
+      String vc = codecName(rawCodec(f, "vcodec"));
+      String ac = codecName(rawCodec(f, "acodec"));
+      if ("none".equals(vc) && "none".equals(ac) && likelyHlsAudio(f)) ac = "aac";
       if (!allowedVideo.isEmpty() && !"none".equals(vc) && !allowedVideo.contains(vc)) continue;
       if (!allowedAudio.isEmpty() && !"none".equals(ac) && !allowedAudio.contains(ac)) continue;
       int h = f.path("height").asInt(0);
@@ -239,17 +279,69 @@ public class MediaSourceService {
         .filter(c -> directPlayable(c)).sorted(videoOrder).toList();
     // Fragmented progressive streams retain the complete timeline and can be
     // fetched by segment. Prefer them over a single full-file URL.
-    List<Candidate> fragmentedProgressive = progressive.stream()
-        .filter(this::seekable).toList();
-    if (!fragmentedProgressive.isEmpty()) return makeSource(root, fragmentedProgressive.get(0), null, true);
+    for (Candidate candidate : progressive) {
+      Candidate withTimeline = withTimeline(candidate);
+      if (seekable(withTimeline)) return makeSource(root, withTimeline, null, true);
+    }
 
     List<Candidate> videos = all.stream().filter(Candidate::hasVideo).filter(c -> !c.hasAudio())
-        .filter(this::directPlayable).filter(this::seekable).sorted(videoOrder).toList();
+        .filter(this::directPlayable).filter(c -> seekable(c) || isHls(c)).sorted(videoOrder).toList();
     List<Candidate> audios = all.stream().filter(c -> c.hasAudio() && !c.hasVideo())
-        .filter(this::directPlayable).filter(this::seekable).sorted(Comparator.comparingInt(Candidate::codecRank)
+        .filter(this::directPlayable).filter(c -> seekable(c) || isHls(c)).sorted(Comparator.comparingInt(Candidate::codecRank)
             .thenComparingDouble(Candidate::bitrate).reversed()).toList();
-    if (videos.isEmpty() || audios.isEmpty()) throw new IllegalStateException("no seekable fragmented representation available");
-    return makeSource(root, videos.get(0), audios.get(0), false);
+    for (Candidate videoCandidate : videos) {
+      Candidate video = withTimeline(videoCandidate);
+      if (!seekable(video)) continue;
+      for (Candidate audioCandidate : audios) {
+        Candidate audio = withTimeline(audioCandidate);
+        if (seekable(audio)) return makeSource(root, video, audio, false);
+      }
+    }
+    throw new IllegalStateException("no seekable fragmented representation available");
+  }
+
+  private Candidate withTimeline(Candidate candidate) throws Exception {
+    if (seekable(candidate) || !isHls(candidate)) return candidate;
+    URI playlist = uri(candidate.node().path("url").asText(null));
+    if (playlist == null) return candidate;
+    ArrayNode fragments = hlsFragments(playlist, 0);
+    if (fragments.size() < 2) return candidate;
+    ObjectNode copy = (ObjectNode) candidate.node().deepCopy();
+    copy.set("fragments", fragments);
+    return new Candidate(copy, candidate.height(), candidate.videoCodec(), candidate.audioCodec(), candidate.ext(), candidate.codecRank(), candidate.bitrate());
+  }
+
+  private ArrayNode hlsFragments(URI playlist, int depth) throws Exception {
+    if (depth > 2) throw new IllegalStateException("HLS playlist nesting is too deep");
+    HttpRequest request = HttpRequest.newBuilder(playlist).timeout(Duration.ofSeconds(30)).GET().build();
+    HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    if (response.statusCode() < 200 || response.statusCode() > 299)
+      throw new IllegalStateException("HLS playlist request returned status " + response.statusCode());
+    List<String> lines = response.body().lines().toList();
+    for (int i = 0; i < lines.size(); i++) {
+      if (!lines.get(i).startsWith("#EXT-X-STREAM-INF:")) continue;
+      for (int j = i + 1; j < lines.size(); j++) {
+        String variant = lines.get(j).trim();
+        if (!variant.isBlank() && !variant.startsWith("#")) return hlsFragments(playlist.resolve(variant), depth + 1);
+      }
+    }
+    if (lines.stream().anyMatch(line -> line.startsWith("#EXT-X-MAP:"))) return json.createArrayNode();
+    ArrayNode fragments = json.createArrayNode();
+    double duration = -1;
+    for (String raw : lines) {
+      String line = raw.trim();
+      if (line.startsWith("#EXTINF:")) {
+        int comma = line.indexOf(',');
+        String value = comma < 0 ? line.substring(8) : line.substring(8, comma);
+        try { duration = Double.parseDouble(value); } catch (NumberFormatException ignored) { duration = -1; }
+      } else if (duration >= 0 && !line.isBlank() && !line.startsWith("#")) {
+        ObjectNode fragment = fragments.addObject();
+        fragment.put("url", playlist.resolve(line).toString());
+        fragment.put("duration", duration);
+        duration = -1;
+      }
+    }
+    return fragments;
   }
 
   private Source makeSource(JsonNode root, Candidate video, Candidate audio, boolean progressive) {
@@ -290,6 +382,20 @@ public class MediaSourceService {
     return result;
   }
   private boolean seekable(Candidate candidate) { return candidate.node().path("fragments").isArray() && candidate.node().path("fragments").size() > 1; }
+  private static boolean isHls(Candidate candidate) { return isHls(candidate.node()); }
+  private static boolean isHls(JsonNode format) {
+    String protocol = format.path("protocol").asText("").toLowerCase(Locale.ROOT);
+    return protocol.contains("m3u8") || format.path("url").asText("").contains("/manifest/hls_");
+  }
+
+  private static boolean likelyHlsAudio(JsonNode format) {
+    if (!isHls(format)) return false;
+    String id = format.path("format_id").asText("");
+    return switch (id) {
+      case "139", "140", "233", "234" -> true;
+      default -> false;
+    };
+  }
 
   private boolean directPlayable(Candidate c) {
     if (c.node().path("url").asText("").isBlank() && !c.node().path("fragments").isArray()) return false;
@@ -348,6 +454,10 @@ public class MediaSourceService {
   private static URI uriRequired(String value) { URI result = uri(value); if (result == null) throw new IllegalArgumentException("persisted source has no URL"); return result; }
   private static URI uri(String value) { try { return value == null || value.isBlank() ? null : URI.create(value); } catch (IllegalArgumentException e) { return null; } }
   private static String textOrNull(JsonNode x, String name) { return x.hasNonNull(name) ? x.path(name).asText() : null; }
+  private static String rawCodec(JsonNode format, String name) {
+    JsonNode value = format.get(name);
+    return value == null || value.isNull() ? "none" : value.asText("none");
+  }
   private static Instant minExpiry(Instant a, Instant b) { if (a == null) return b; if (b == null) return a; return a.isBefore(b) ? a : b; }
   private static Instant expiry(JsonNode format) {
     String value = format.path("url").asText(""); Matcher matcher = EXPIRE.matcher(value);

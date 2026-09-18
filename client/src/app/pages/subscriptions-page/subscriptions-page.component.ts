@@ -1,4 +1,4 @@
-import {ChangeDetectionStrategy, Component, OnInit, inject, signal} from '@angular/core';
+import {ChangeDetectionStrategy, Component, EventEmitter, OnInit, Output, inject, signal} from '@angular/core';
 import {CommonModule, DatePipe} from '@angular/common';
 import {HttpErrorResponse} from '@angular/common/http';
 import {FormsModule} from '@angular/forms';
@@ -18,10 +18,12 @@ export class SubscriptionsPageComponent implements OnInit {
     readonly loading = signal(false);
     readonly error = signal('');
     readonly notice = signal('');
+    @Output() videoCountChange = new EventEmitter<number>();
     channel = '';
 
     ngOnInit(): void {
         this.loadSubscriptions();
+        this.loadVideoCount();
     }
 
     addSubscription(): void {
@@ -66,8 +68,9 @@ export class SubscriptionsPageComponent implements OnInit {
         this.loading.set(true);
         this.libraryApi.refreshSubscription({id: subscription.id}).subscribe({
             next: result => {
-                this.notice.set(`Refresh complete${result.discovered === undefined ? '.' : `: ${result.discovered} video(s) discovered.`}`);
+                this.notice.set(`Refresh complete${result.discovered === undefined ? '.' : `: ${result.discovered} new video(s) discovered.`}`);
                 this.loadSubscriptions();
+                this.loadVideoCount();
             },
             error: (error: unknown) => {
                 this.loading.set(false);
@@ -83,6 +86,7 @@ export class SubscriptionsPageComponent implements OnInit {
             next: () => {
                 this.notice.set('Subscription removed. Shared cache is retained for other users.');
                 this.loadSubscriptions();
+                this.loadVideoCount();
             },
             error: (error: unknown) => {
                 this.loading.set(false);
@@ -106,6 +110,12 @@ export class SubscriptionsPageComponent implements OnInit {
                 this.loading.set(false);
                 this.error.set(this.messageFor(error, 'Could not load subscriptions.'));
             }
+        });
+    }
+
+    private loadVideoCount(): void {
+        this.libraryApi.listVideos().subscribe({
+            next: rows => this.videoCountChange.emit(rows.length)
         });
     }
 

@@ -4,13 +4,17 @@ FinTube is a self-hosted, multi-user YouTube-to-Jellyfin bridge. Jellyfin sees o
 
 ## Run
 
-Install `yt-dlp` on the server, then create the first administrator through the setup wizard. Set a one-time token before first start (recommended):
+Install `yt-dlp` and `ffmpeg` on the server, then create the first administrator through the setup wizard:
+
+On macOS with Homebrew, run `brew install yt-dlp ffmpeg`. If the app is started from IntelliJ and cannot inherit Homebrew's `PATH`, set the admin settings `yt_dlp_path` and `ffmpeg_path` to absolute paths such as `/opt/homebrew/bin/yt-dlp` and `/opt/homebrew/bin/ffmpeg`.
 
 ```bash
-FINTUBE_SETUP_ADMIN_TOKEN='use-a-long-random-one-time-token' ./server/mvnw -f server/pom.xml spring-boot:run
+./server/mvnw -f server/pom.xml spring-boot:run
 ```
 
-The application is at `http://localhost:8080`. When no administrator exists, it presents a setup wizard which requires that token. If `FINTUBE_SETUP_ADMIN_TOKEN` is omitted, FinTube generates one at `data/setup-admin-token` with owner-only permissions. The token is hashed in H2, is never returned by the API, and is deleted after the first admin is created. Configure the YouTube Data API key, public bridge URL, Jellyfin values, quality and cache policy in the admin screen afterward.
+The application is at `http://localhost:8080`. When no administrator exists, it presents a setup wizard and prints a one-time token to the server console. FinTube also saves the generated token at `data/setup-admin-token` with owner-only permissions. The token is hashed in H2, is never returned by the API, and is deleted after the first admin is created. Configure the YouTube Data API key, public bridge URL, Jellyfin values, quality and cache policy in the admin screen afterward.
+
+For development, run `./server/mvnw -f server/pom.xml spring-boot:run` and `cd client && npm start` in separate terminals. Angular's dev server rebuilds and reloads the browser; Spring Boot DevTools restarts the backend after compiled classes change. In IntelliJ, enable automatic project builds if you want Java changes to trigger the restart without invoking Maven manually.
 
 Persistent state defaults to `./data` and can be relocated with `FINTUBE_DATA_DIR`. It contains a file-backed H2 database (`fintube-h2.mv.db`), `users/<safe-user-slug>/` Jellyfin trees and the global `cache/` tree. Liquibase applies the versioned schema changelogs automatically at startup. Map each individual user directory as a separate Jellyfin library; do not map the parent `users` directory to every Jellyfin account.
 

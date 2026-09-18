@@ -12,7 +12,8 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.Set;
-import org.springframework.beans.factory.annotation.Value;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,14 +22,12 @@ import org.springframework.transaction.annotation.Transactional;
 @org.springframework.context.annotation.DependsOn("liquibase")
 public class Bootstrap {
     private static final String TOKEN_KEY = "admin_token_hash";
+    private static final Logger LOG = LoggerFactory.getLogger(Bootstrap.class);
 
     private final ApplicationPaths paths;
     private final SetupStateRepository setupState;
     private final UserRepository users;
     private final AuthService auth;
-
-    @Value("${fintube.setup-admin-token}")
-    String configuredToken;
 
     Bootstrap(ApplicationPaths paths, SetupStateRepository setupState, UserRepository users, AuthService auth) {
         this.paths = paths;
@@ -44,15 +43,17 @@ public class Bootstrap {
 
     @Transactional
     synchronized void ensureToken() throws Exception {
-        if (hasAdmin() || tokenHash() != null) return;
-
-        String token = configuredToken == null ? "" : configuredToken.trim();
-        if (token.isBlank()) {
-            byte[] bytes = new byte[32];
-            new SecureRandom().nextBytes(bytes);
-            token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-            writeLocalToken(token);
+        if (hasAdmin()) return;
+        if (tokenHash() != null) {
+            logLocalToken();
+            return;
         }
+
+        byte[] bytes = new byte[32];
+        new SecureRandom().nextBytes(bytes);
+        String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        writeLocalToken(token);
+        LOG.info("No administrator exists. Use this one-time setup token in the setup wizard: {}", token);
         setupState.save(new SetupStateEntity(TOKEN_KEY, auth.hash(token), ApplicationClock.now()));
     }
 
@@ -102,6 +103,16 @@ public class Bootstrap {
                     Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
         } catch (UnsupportedOperationException ignored) {
             // Windows and other filesystems may not expose POSIX permissions.
+        }
+    }
+
+    private void logLocalToken() {
+        try {
+            String token = Files.readString(paths.root.resolve("setup-admin-token")).trim();
+            if (!token.isBlank()) {
+                LOG.info("No administrator exists. Use this one-time setup token in the setup wizard: {}", token);
+            }
+        } catch (Exception ignored) {
         }
     }
 }
