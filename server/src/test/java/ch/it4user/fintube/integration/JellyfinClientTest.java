@@ -36,4 +36,20 @@ class JellyfinClientTest {
     assertThat(JellyfinClient.parseBoolean("0", true)).isFalse();
     assertThat(JellyfinClient.parseBoolean("maybe", true)).isTrue();
   }
+
+  @Test
+  void explainsAuthenticationFailures() {
+    assertThat(JellyfinClient.operationFailureMessage(401))
+        .contains("rejected the API key");
+    assertThat(JellyfinClient.operationFailureMessage(403))
+        .contains("denied the request");
+    assertThat(JellyfinClient.operationFailureMessage(500))
+        .isEqualTo("Jellyfin returned HTTP 500");
+  }
+
+  @Test
+  void usesJellyfinModernAuthorizationHeader() {
+    assertThat(JellyfinClient.authorizationHeader("api-key"))
+        .isEqualTo("MediaBrowser Token=\"api-key\"");
+  }
 }

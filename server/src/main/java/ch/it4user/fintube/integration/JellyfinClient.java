@@ -100,13 +100,10 @@ public class JellyfinClient {
           "Jellyfin URL is not configured");
     }
     try {
-      // Public info lets an administrator diagnose reachability before an API
-      // key is entered; privileged operations still require the key.
-      HttpResponse<String> response = request(c, "GET",
-          c.apiKeyConfigured() ? "/System/Info" : "/System/Info/Public", "");
+      HttpResponse<String> response = request(c, "GET", "/System/Info", "");
       if (response.statusCode() == 401 || response.statusCode() == 403) {
         return new Status(true, true, true, c.apiKeyConfigured(), response.statusCode(), c.baseUrl(),
-            "", "", "Jellyfin rejected the API key");
+            "", "", authFailureMessage(response.statusCode()));
       }
       if (response.statusCode() / 100 != 2) {
         return new Status(true, true, false, c.apiKeyConfigured(), response.statusCode(), c.baseUrl(),
@@ -132,7 +129,7 @@ public class JellyfinClient {
     try {
       HttpResponse<String> r = request(c, "POST", "/Library/Refresh", "");
       if (r.statusCode() / 100 == 2) return new Operation(true, r.statusCode(), "library refresh queued");
-      return new Operation(false, r.statusCode(), "Jellyfin returned HTTP " + r.statusCode());
+      return new Operation(false, r.statusCode(), operationFailureMessage(r.statusCode()));
     } catch (Exception e) {
       return new Operation(false, 0, "Jellyfin is unreachable");
     }
@@ -212,7 +209,7 @@ public class JellyfinClient {
         r = request(c, "PUT", "/Items/" + encPath(itemId), payload);
         if (r.statusCode() / 100 == 2) return new Operation(true, r.statusCode(), "runtime updated");
       }
-      return new Operation(false, r.statusCode(), "Jellyfin returned HTTP " + r.statusCode());
+      return new Operation(false, r.statusCode(), operationFailureMessage(r.statusCode()));
     } catch (Exception e) {
       return new Operation(false, 0, "Jellyfin is unreachable");
     }
@@ -223,7 +220,7 @@ public class JellyfinClient {
     HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(c.baseUrl() + path))
         .timeout(c.requestTimeout())
         .header("Accept", "application/json");
-    if (c.apiKeyConfigured()) b.header("X-Emby-Token", apiKey());
+    if (c.apiKeyConfigured()) b.header("Authorization", authorizationHeader(apiKey()));
     if ("GET".equals(method)) b.GET();
     else if ("POST".equals(method)) b.header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(body == null ? "" : body));
@@ -235,6 +232,21 @@ public class JellyfinClient {
 
   private String apiKey() {
     return settings().getOrDefault("jellyfin_api_key", "");
+  }
+
+  static String authFailureMessage(int statusCode) {
+    return statusCode == 401
+        ? "Jellyfin rejected the API key; verify the key in Jellyfin and FinTube settings"
+        : "Jellyfin denied the request; verify the API key permissions";
+  }
+
+  static String authorizationHeader(String apiKey) {
+    return "MediaBrowser Token=\"" + apiKey + "\"";
+  }
+
+  static String operationFailureMessage(int statusCode) {
+    if (statusCode == 401 || statusCode == 403) return authFailureMessage(statusCode);
+    return "Jellyfin returned HTTP " + statusCode;
   }
 
   private Map<String, String> settings() {
