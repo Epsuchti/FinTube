@@ -79,6 +79,17 @@ class FragmentManagerTest {
       exchange.sendResponseHeaders(200, bytes.length);
       try (var out = exchange.getResponseBody()) { out.write(bytes); }
     });
+    server.createContext("/flaky", exchange -> {
+      int attempt = requests.incrementAndGet();
+      if (attempt < 3) {
+        exchange.sendResponseHeaders(503, -1);
+        exchange.close();
+        return;
+      }
+      byte[] bytes = "recovered-fragment".getBytes();
+      exchange.sendResponseHeaders(200, bytes.length);
+      try (var out = exchange.getResponseBody()) { out.write(bytes); }
+    });
     server.createContext("/video.m3u8", exchange -> {
       byte[] bytes = """
           #EXTM3U
@@ -139,6 +150,17 @@ class FragmentManagerTest {
   }
 
   @Test
+  void transientUpstreamFailureBuffersAndRetriesTheSameFragment() throws Exception {
+    FragmentManager manager = manager();
+    URI flaky = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/flaky");
+
+    Path result = manager.get("VIDEO1", "137", "v0", flaky, true);
+
+    assertEquals("recovered-fragment", Files.readString(result));
+    assertEquals(3, requests.get());
+  }
+
+  @Test
   void activeReaderLeaseProtectsFragmentUntilClosed() throws Exception {
     FragmentManager manager = manager();
     var stream = manager.open("VIDEO1", "137", "v0", source, true);
@@ -158,10 +180,12 @@ class FragmentManagerTest {
         ]}"
         """);
     MediaSourceService.Source selected = service.select(root);
-    assertEquals("136+140-tsv2", selected.format());
+    assertEquals("136+140-tsv5", selected.format());
     assertEquals("h264", selected.videoCodec());
     assertEquals("aac", selected.audioCodec());
     assertEquals(2, selected.fragments().size());
+    assertEquals(0d, selected.fragments().get(0).startSeconds());
+    assertEquals(6d, selected.fragments().get(1).startSeconds());
     assertNotNull(selected.fragments().get(1).audioUrl());
     assertFalse(selected.progressive());
   }
@@ -178,11 +202,41 @@ class FragmentManagerTest {
         """.formatted(base, base));
 
     MediaSourceService.Source selected = service.select(root);
-    assertEquals("311+234-tsv2", selected.format());
+    assertEquals("311+234-tsv5", selected.format());
     assertEquals(2, selected.fragments().size());
     assertEquals("http://127.0.0.1:" + server.getAddress().getPort() + "/audio/1.ts",
         selected.fragments().get(1).audioUrl().toString());
     assertFalse(selected.progressive());
+  }
+
+  @Test
+  void unavailableStreamTimestampFallsBackToUnshiftedRemux() {
+    assertNull(FragmentManager.parseStreamStart("N/A"));
+    assertNull(FragmentManager.parseStreamStart(""));
+    assertEquals(1.25, FragmentManager.parseStreamStart("1.25"));
+  }
+
+  @Test
+  void timestampLessAudioIsPlacedOnTheVideoTimeline() {
+    assertEquals(22d, FragmentManager.audioOffset(22d, null, 22d));
+    assertEquals(22d, FragmentManager.audioOffset(null, null, 22d));
+    assertEquals(0.25d, FragmentManager.audioOffset(22d, 21.75d, 22d));
+  }
+
+  @Test
+  void sourceSelectorRejectsAudioWithDifferentSegmentBoundaries() throws Exception {
+    MediaSourceService service = new MediaSourceService(settings, mediaSources);
+    var root = new ObjectMapper().readTree("""
+        {"duration":12,"formats":[
+          {"format_id":"136","height":720,"vcodec":"avc1.4d401f","acodec":"none","ext":"mp4","url":"http://video","fragments":[{"url":"http://video/0","duration":6},{"url":"http://video/1","duration":6}]},
+          {"format_id":"140","height":0,"vcodec":"none","acodec":"mp4a.40.2","ext":"m4a","url":"http://audio-aac","fragments":[{"url":"http://audio-aac/0","duration":4},{"url":"http://audio-aac/1","duration":4},{"url":"http://audio-aac/2","duration":4}]},
+          {"format_id":"251","height":0,"vcodec":"none","acodec":"opus","ext":"webm","url":"http://audio-opus","fragments":[{"url":"http://audio-opus/0","duration":6.02},{"url":"http://audio-opus/1","duration":5.98}]}
+        ]}""");
+
+    MediaSourceService.Source selected = service.select(root);
+
+    assertEquals("136+251-tsv5", selected.format());
+    assertEquals("http://audio-opus/0", selected.fragments().getFirst().audioUrl().toString());
   }
 
   @Test

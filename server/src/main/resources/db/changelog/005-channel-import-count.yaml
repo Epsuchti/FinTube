@@ -1,0 +1,10 @@
+databaseChangeLog:
+  - changeSet:
+      id: 005-channel-import-count
+      author: fintube
+      changes:
+        - addColumn:
+            tableName: youtube_channels
+            columns:
+              - column: {name: initial_import_count, type: integer}
+              - column: {name: download_count, type: integer}

@@ -46,7 +46,7 @@ public class PlaybackService {
             valid(video, resolvedToken);
             var source = sources.source(video);
             filler.enqueue(video);
-            StringBuilder output = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-INDEPENDENT-SEGMENTS\n");
+            StringBuilder output = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-PLAYLIST-TYPE:VOD\n");
             output.append("#EXT-X-TARGETDURATION:").append(source.targetDuration()).append("\n#EXT-X-MEDIA-SEQUENCE:0\n");
             for (var fragment : source.fragments()) {
                 output.append("#EXTINF:").append(String.format(java.util.Locale.ROOT, "%.3f", fragment.seconds())).append(",\n/play/")
@@ -76,14 +76,14 @@ public class PlaybackService {
             Path path;
             InputStream stream;
             try {
-                path = fragments.get(video, source.format(), resolvedFragmentId, sourceFragment.url(), sourceFragment.audioUrl(), true);
-                stream = fragments.open(video, source.format(), resolvedFragmentId, sourceFragment.url(), sourceFragment.audioUrl(), true);
+                path = fragments.get(video, source.format(), resolvedFragmentId, sourceFragment.url(), sourceFragment.audioUrl(), sourceFragment.startSeconds(), true);
+                stream = fragments.open(video, source.format(), resolvedFragmentId, sourceFragment.url(), sourceFragment.audioUrl(), sourceFragment.startSeconds(), true);
             } catch (FragmentManager.ExpiredSourceException e) {
                 source = sources.refresh(video);
                 var refreshed = source.fragments().stream().filter(item -> item.id().equals(resolvedFragmentId)).findFirst()
                         .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_GATEWAY));
-                path = fragments.get(video, source.format(), resolvedFragmentId, refreshed.url(), refreshed.audioUrl(), true);
-                stream = fragments.open(video, source.format(), resolvedFragmentId, refreshed.url(), refreshed.audioUrl(), true);
+                path = fragments.get(video, source.format(), resolvedFragmentId, refreshed.url(), refreshed.audioUrl(), refreshed.startSeconds(), true);
+                stream = fragments.open(video, source.format(), resolvedFragmentId, refreshed.url(), refreshed.audioUrl(), refreshed.startSeconds(), true);
             }
             MediaType type = source.progressive()
                     ? ("webm".equalsIgnoreCase(source.container()) ? MediaType.parseMediaType("video/webm") : MediaType.parseMediaType("video/mp4"))

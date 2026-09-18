@@ -5,3 +5,5 @@ databaseChangeLog:
       file: db/changelog/003-po-token-provider.yaml
   - include:
       file: db/changelog/004-restore-docker-po-token-provider.yaml
+  - include:
+      file: db/changelog/005-channel-import-count.yaml

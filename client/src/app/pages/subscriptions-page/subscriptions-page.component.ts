@@ -3,6 +3,7 @@ import {CommonModule, DatePipe} from '@angular/common';
 import {HttpErrorResponse} from '@angular/common/http';
 import {FormsModule} from '@angular/forms';
 import {LibraryService, Subscription} from '../../api';
+import {switchMap} from 'rxjs';
 
 @Component({
     selector: 'ft-subscriptions-page',
@@ -18,6 +19,8 @@ export class SubscriptionsPageComponent implements OnInit {
     readonly loading = signal(false);
     readonly error = signal('');
     readonly notice = signal('');
+    readonly importCounts = signal<Record<number, number>>({});
+    readonly downloadCounts = signal<Record<number, number>>({});
     @Output() videoCountChange = new EventEmitter<number>();
     channel = '';
 
@@ -79,6 +82,36 @@ export class SubscriptionsPageComponent implements OnInit {
         });
     }
 
+    reimportSubscription(subscription: Subscription): void {
+        const count = this.importCount(subscription);
+        if (!Number.isInteger(count) || count < 1 || count > 1000) {
+            this.error.set('Initial import count must be between 1 and 1000.');
+            return;
+        }
+        const downloadCount = this.downloadCount(subscription);
+        if (!Number.isInteger(downloadCount) || downloadCount < 0 || downloadCount > 1000) {
+            this.error.set('Download count must be between 0 and 1000.');
+            return;
+        }
+        this.loading.set(true);
+        this.libraryApi.updateSubscription({
+            id: subscription.id,
+            toggleSubscriptionRequest: {
+                enabled: this.enabled(subscription), initial_import_count: count, download_count: downloadCount
+            }
+        }).pipe(switchMap(() => this.libraryApi.refreshSubscription({id: subscription.id}))).subscribe({
+            next: result => {
+                this.notice.set(`Reimport complete${result.discovered === undefined ? '.' : `: ${result.discovered} new video(s) discovered.`}`);
+                this.loadSubscriptions();
+                this.loadVideoCount();
+            },
+            error: (error: unknown) => {
+                this.loading.set(false);
+                this.error.set(this.messageFor(error, 'Could not reimport subscription.'));
+            }
+        });
+    }
+
     removeSubscription(subscription: Subscription): void {
         if (!window.confirm(`Remove ${subscription.name} from your subscriptions?`)) return;
         this.loading.set(true);
@@ -99,11 +132,31 @@ export class SubscriptionsPageComponent implements OnInit {
         return item.enabled === true || (item.enabled as unknown) === 1;
     }
 
+    importCount(subscription: Subscription): number {
+        return this.importCounts()[subscription.id] ?? subscription.initial_import_count;
+    }
+
+    setImportCount(subscription: Subscription, value: string): void {
+        const count = Number(value);
+        this.importCounts.update(current => ({...current, [subscription.id]: count}));
+    }
+
+    downloadCount(subscription: Subscription): number {
+        return this.downloadCounts()[subscription.id] ?? subscription.download_count;
+    }
+
+    setDownloadCount(subscription: Subscription, value: string): void {
+        const count = Number(value);
+        this.downloadCounts.update(current => ({...current, [subscription.id]: count}));
+    }
+
     private loadSubscriptions(): void {
         this.loading.set(true);
         this.libraryApi.listSubscriptions().subscribe({
             next: rows => {
                 this.subscriptions.set(rows);
+                this.importCounts.set(Object.fromEntries(rows.map(row => [row.id, row.initial_import_count])));
+                this.downloadCounts.set(Object.fromEntries(rows.map(row => [row.id, row.download_count])));
                 this.loading.set(false);
             },
             error: (error: unknown) => {

@@ -95,6 +95,8 @@ public class LibraryApplicationService {
             canonical.setName(channel.name());
             canonical.setUrl(channel.url());
             canonical.setUpdatedAt(ApplicationClock.now());
+            if (canonical.getInitialImportCount() == null) canonical.setInitialImportCount(initialImportCount());
+            if (canonical.getDownloadCount() == null) canonical.setDownloadCount(0);
             channels.save(canonical);
             subscriptions.save(new YouTubeSubscriptionEntity(principal.id(), channel.id(), 1, ApplicationClock.now()));
             audit.event("SUBSCRIPTION_ADDED", Map.of("userId", principal.id(), "channelId", channel.id()));
@@ -109,8 +111,35 @@ public class LibraryApplicationService {
             YouTubeSubscriptionEntity subscription = subscriptions.findByIdAndUserId(id, principal.id())
                     .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
             subscription.setEnabled(Boolean.TRUE.equals(requestBody.getEnabled()) ? 1 : 0);
+            Integer initialImportCount = requestBody.getInitialImportCount();
+            Integer downloadCount = requestBody.getDownloadCount();
+            if (initialImportCount != null) {
+                if (initialImportCount < 1 || initialImportCount > 1000) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "initial import count must be between 1 and 1000");
+                }
+                YouTubeChannelEntity channel = channels.findById(subscription.getChannelId())
+                        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+                channel.setInitialImportCount(initialImportCount);
+                channel.setLastSyncPublishedAt(null);
+                channels.save(channel);
+            }
+            if (downloadCount != null) {
+                if (downloadCount < 0 || downloadCount > 1000) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "download count must be between 0 and 1000");
+                }
+                YouTubeChannelEntity channel = channels.findById(subscription.getChannelId())
+                        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+                channel.setDownloadCount(downloadCount);
+                channels.save(channel);
+            }
             subscriptions.save(subscription);
-            audit.event("SUBSCRIPTION_UPDATED", Map.of("userId", principal.id(), "subscriptionId", id, "enabled", Boolean.TRUE.equals(requestBody.getEnabled())));
+            Map<String, Object> auditFields = new java.util.LinkedHashMap<>();
+            auditFields.put("userId", principal.id());
+            auditFields.put("subscriptionId", id);
+            auditFields.put("enabled", Boolean.TRUE.equals(requestBody.getEnabled()));
+            if (initialImportCount != null) auditFields.put("initialImportCount", initialImportCount);
+            if (downloadCount != null) auditFields.put("downloadCount", downloadCount);
+            audit.event("SUBSCRIPTION_UPDATED", auditFields);
             return null;
         });
     }
@@ -171,10 +200,20 @@ public class LibraryApplicationService {
     }
 
     private Subscription subscription(YouTubeSubscriptionRepository.UserSubscriptionView value) {
-        return new Subscription(value.getId(), value.getChannelId(), value.getName(), booleanValue(value.getEnabled()))
+        int importCount = value.getInitialImportCount() == null ? initialImportCount() : value.getInitialImportCount();
+        int downloadCount = value.getDownloadCount() == null ? 0 : value.getDownloadCount();
+        return new Subscription(value.getId(), value.getChannelId(), value.getName(), booleanValue(value.getEnabled()), importCount, downloadCount)
                 .url(value.getUrl())
                 .lastCheckedAt(value.getLastCheckedAt())
                 .lastSuccessfulSyncAt(value.getLastSuccessfulSyncAt());
+    }
+
+    private int initialImportCount() {
+        try {
+            return Math.max(1, Math.min(1000, Integer.parseInt(settings.value("initial_channel_import_count"))));
+        } catch (RuntimeException ignored) {
+            return 20;
+        }
     }
 
     private Video video(LibraryVideoRepository.VideoView value, long retention) {

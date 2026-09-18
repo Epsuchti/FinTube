@@ -5,6 +5,7 @@ import ch.it4user.fintube.service.PlaybackService;
 import ch.it4user.fintube.api.playback.contract.PlaybackApi;
 import org.springframework.core.io.Resource;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.RestController;
 import jakarta.servlet.http.HttpServletRequest;
 
@@ -27,6 +28,9 @@ public class PlaybackContractController implements PlaybackApi {
 
     @Override
     public ResponseEntity<String> getPlaybackManifest(String video, String token) {
-        return ResponseEntity.ok(playback.manifest(video, token, requestContext));
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("application/vnd.apple.mpegurl"))
+                .header("Cache-Control", "no-store")
+                .body(playback.manifest(video, token, requestContext));
     }
 }

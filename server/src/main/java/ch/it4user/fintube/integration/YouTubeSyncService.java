@@ -155,7 +155,7 @@ public class YouTubeSyncService {
       updateChannelSuccess(channel, successAt, newestPublished);
       markSubscriptionsSynced(channel, successAt);
       linkEnabledSubscribers(channel);
-      prefetchNewest(channel, currentSettings);
+      prefetchNewest(channel);
       return count;
     } catch (Exception failure) {
       markChannelFailure(channel, now(), safeError(failure));
@@ -164,10 +164,9 @@ public class YouTubeSyncService {
   }
 
   /** Enqueue globally shared, low-priority cache fills for a channel's latest X videos. */
-  private void prefetchNewest(String channel, Map<String, String> settings) {
-    int limit;
-    try { limit = Math.max(0, Math.min(1000, Integer.parseInt(settings.getOrDefault("newest_videos_to_download", "0")))); }
-    catch (NumberFormatException ignored) { return; }
+  private void prefetchNewest(String channel) {
+    int limit = channels.findById(channel).map(YouTubeChannelEntity::getDownloadCount)
+        .map(value -> Math.max(0, Math.min(1000, value))).orElse(0);
     if (limit == 0) return;
     try {
       videos.findByChannelIdAndAvailabilityOrderByPublishedAtDesc(
@@ -216,20 +215,14 @@ public class YouTubeSyncService {
   private List<JsonNode> discover(String channel, String key, String cursor,
                                   Map<String, String> settings) throws Exception {
     boolean initial = cursor == null || cursor.isBlank();
-    int initialLimit;
-    try {
-      initialLimit = Math.max(1, Math.min(50,
-          Integer.parseInt(settings.getOrDefault("initial_channel_import_count", "20"))));
-    } catch (NumberFormatException e) {
-      initialLimit = 20;
-    }
-    int limit = initial ? initialLimit : 50;
+    int initialLimit = initialImportCount(channel, settings);
     List<JsonNode> items = new ArrayList<>();
     String page = null;
     int pages = 0;
     do {
       StringBuilder url = new StringBuilder("https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=")
-          .append(enc(channel)).append("&type=video&order=date&maxResults=").append(limit)
+          .append(enc(channel)).append("&type=video&order=date&maxResults=")
+          .append(initial ? Math.min(50, initialLimit - items.size()) : 50)
           .append("&key=").append(enc(key));
       if (!initial) url.append("&publishedAfter=").append(enc(afterCursor(cursor)));
       if (page != null && !page.isBlank()) url.append("&pageToken=").append(enc(page));
@@ -237,7 +230,8 @@ public class YouTubeSyncService {
       root.path("items").forEach(items::add);
       page = root.path("nextPageToken").asText("");
       pages++;
-    } while (!initial && page != null && !page.isBlank() && pages < MAX_INCREMENTAL_PAGES);
+    } while (page != null && !page.isBlank() && pages < MAX_INCREMENTAL_PAGES
+        && (!initial || items.size() < initialLimit));
     return items;
   }
 
@@ -245,6 +239,19 @@ public class YouTubeSyncService {
     YouTubeChannelEntity entity = channels.findById(channel)
         .orElseThrow(() -> new IllegalArgumentException("unknown YouTube channel " + channel));
     return entity.getLastSyncPublishedAt();
+  }
+
+  private int initialImportCount(String channel, Map<String, String> settings) {
+    Integer configured = channels.findById(channel)
+        .map(YouTubeChannelEntity::getInitialImportCount)
+        .orElse(null);
+    if (configured != null) return Math.max(1, Math.min(1000, configured));
+    try {
+      return Math.max(1, Math.min(1000,
+          Integer.parseInt(settings.getOrDefault("initial_channel_import_count", "20"))));
+    } catch (NumberFormatException ignored) {
+      return 20;
+    }
   }
 
   private void markChannelAttempt(String channel, String at) {

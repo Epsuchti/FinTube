@@ -45,7 +45,8 @@ import org.slf4j.LoggerFactory;
 @Service
 public class MediaSourceService {
   private static final String DEFAULT_PO_TOKEN_PROVIDER_ARGS = "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416";
-  private static final String REMUX_FORMAT_VERSION = "-tsv2";
+  private static final String REMUX_FORMAT_VERSION = "-tsv5";
+  private static final double TIMELINE_TOLERANCE_SECONDS = 0.250d;
   private static final Logger LOG = LoggerFactory.getLogger(MediaSourceService.class);
   private static final Pattern EXPIRE = Pattern.compile("(?:^|[?&])expire=(\\d+)");
   private final SettingsService settingsService;
@@ -76,18 +77,24 @@ public class MediaSourceService {
     private final URI url;
     private final URI audioUrl;
     private final double seconds;
+    private final double startSeconds;
 
-    public Fragment(String id, URI url, double seconds) { this(id, url, null, seconds); }
+    public Fragment(String id, URI url, double seconds) { this(id, url, null, seconds, 0d); }
     public Fragment(String id, URI url, URI audioUrl, double seconds) {
+      this(id, url, audioUrl, seconds, 0d);
+    }
+    public Fragment(String id, URI url, URI audioUrl, double seconds, double startSeconds) {
       this.id = id;
       this.url = url;
       this.audioUrl = audioUrl;
       this.seconds = seconds > 0 ? seconds : 4d;
+      this.startSeconds = Math.max(0d, startSeconds);
     }
     public String id() { return id; }
     public URI url() { return url; }
     public URI audioUrl() { return audioUrl; }
     public double seconds() { return seconds; }
+    public double startSeconds() { return startSeconds; }
     public boolean hasSeparateAudio() { return audioUrl != null; }
   }
 
@@ -159,7 +166,7 @@ public class MediaSourceService {
   /** Load a valid persisted probe before invoking yt-dlp after a restart. */
   public Source source(String video) throws Exception {
     Source memory = sources.get(video);
-    if (memory != null && !memory.expired()) return memory;
+    if (memory != null && !memory.expired() && currentFormat(memory)) return memory;
     Source persisted = load(video);
     if (persisted != null && !persisted.expired() && currentFormat(persisted)) {
       sources.put(video, persisted);
@@ -352,7 +359,7 @@ public class MediaSourceService {
       if (!seekable(video)) continue;
       for (Candidate audioCandidate : audios) {
         Candidate audio = withTimeline(audioCandidate);
-        if (seekable(audio)) return makeSource(root, video, audio, false);
+        if (seekable(audio) && matchingTimelines(video, audio)) return makeSource(root, video, audio, false);
       }
     }
     throw new IllegalStateException("no seekable fragmented representation available");
@@ -410,6 +417,7 @@ public class MediaSourceService {
     if (count < 2) throw new IllegalStateException("source has no segment timeline; refusing non-seekable fallback");
     List<Fragment> fragments = new ArrayList<>(count);
     double total = root.path("duration").asDouble(0);
+    double position = 0d;
     Instant expiry = expiry(video.node());
     if (audio != null) expiry = minExpiry(expiry, expiry(audio.node()));
     for (int i = 0; i < count; i++) {
@@ -425,7 +433,9 @@ public class MediaSourceService {
       if (vu == null) throw new IllegalStateException("selected video format has no source URL");
       double seconds = vp.path("duration").asDouble(0);
       if (seconds <= 0 && i == count - 1 && total > 0) seconds = total - fragments.stream().mapToDouble(Fragment::seconds).sum();
-      fragments.add(new Fragment("v" + i, vu, au, seconds > 0 ? seconds : 4));
+      double fragmentSeconds = seconds > 0 ? seconds : 4;
+      fragments.add(new Fragment("v" + i, vu, au, fragmentSeconds, position));
+      position += fragmentSeconds;
     }
     int target = 1;
     for (Fragment f : fragments) target = Math.max(target, (int) Math.ceil(f.seconds()));
@@ -435,6 +445,30 @@ public class MediaSourceService {
   }
 
   private List<JsonNode> parts(JsonNode format) {
+    List<JsonNode> result = new ArrayList<>();
+    if (format.path("fragments").isArray()) format.path("fragments").forEach(result::add);
+    return result;
+  }
+
+  static boolean matchingTimelines(Candidate video, Candidate audio) {
+    List<JsonNode> videoParts = partsOf(video.node());
+    List<JsonNode> audioParts = partsOf(audio.node());
+    if (videoParts.size() < 2 || videoParts.size() != audioParts.size()) return false;
+    double videoPosition = 0;
+    double audioPosition = 0;
+    for (int index = 0; index < videoParts.size(); index++) {
+      if (Math.abs(videoPosition - audioPosition) > TIMELINE_TOLERANCE_SECONDS) return false;
+      double videoDuration = videoParts.get(index).path("duration").asDouble(0);
+      double audioDuration = audioParts.get(index).path("duration").asDouble(0);
+      if (videoDuration <= 0 || audioDuration <= 0
+          || Math.abs(videoDuration - audioDuration) > TIMELINE_TOLERANCE_SECONDS) return false;
+      videoPosition += videoDuration;
+      audioPosition += audioDuration;
+    }
+    return Math.abs(videoPosition - audioPosition) <= TIMELINE_TOLERANCE_SECONDS;
+  }
+
+  private static List<JsonNode> partsOf(JsonNode format) {
     List<JsonNode> result = new ArrayList<>();
     if (format.path("fragments").isArray()) format.path("fragments").forEach(result::add);
     return result;
@@ -495,6 +529,7 @@ public class MediaSourceService {
     ArrayNode fragments = out.putArray("fragments");
     for (Fragment f : source.fragments()) {
       ObjectNode x = fragments.addObject(); x.put("id", f.id()); x.put("url", f.url().toString()); x.put("seconds", f.seconds());
+      x.put("startSeconds", f.startSeconds());
       if (f.audioUrl() != null) x.put("audioUrl", f.audioUrl().toString());
     }
     return out;
@@ -503,7 +538,14 @@ public class MediaSourceService {
   private Source decode(String text) throws java.io.IOException {
     JsonNode x = json.readTree(text);
     List<Fragment> fragments = new ArrayList<>();
-    for (JsonNode f : x.path("fragments")) fragments.add(new Fragment(f.path("id").asText(), uriRequired(f.path("url").asText()), uri(f.path("audioUrl").asText(null)), f.path("seconds").asDouble(4)));
+    double position = 0d;
+    for (JsonNode f : x.path("fragments")) {
+      double seconds = f.path("seconds").asDouble(4);
+      double startSeconds = f.path("startSeconds").asDouble(position);
+      fragments.add(new Fragment(f.path("id").asText(), uriRequired(f.path("url").asText()),
+          uri(f.path("audioUrl").asText(null)), seconds, startSeconds));
+      position = startSeconds + seconds;
+    }
     Instant expiry = x.hasNonNull("expiresAt") ? Instant.parse(x.path("expiresAt").asText()) : null;
     return new Source(x.path("format").asText(), x.path("videoFormat").asText(x.path("format").asText()),
         x.path("audioFormat").isMissingNode() ? null : x.path("audioFormat").asText(), fragments,

@@ -24,6 +24,8 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -78,7 +80,7 @@ public class FragmentManager {
 
   /** Backwards-compatible progressive fragment entry point. */
   public Path get(String video, String format, String fragment, URI source, boolean high) throws Exception {
-    return get(video, format, fragment, source, null, high);
+    return get(video, format, fragment, source, null, 0d, high);
   }
 
   /**
@@ -88,6 +90,11 @@ public class FragmentManager {
    */
   public Path get(String video, String format, String fragment, URI videoSource,
                  URI audioSource, boolean high) throws Exception {
+    return get(video, format, fragment, videoSource, audioSource, 0d, high);
+  }
+
+  public Path get(String video, String format, String fragment, URI videoSource,
+                  URI audioSource, double startSeconds, boolean high) throws Exception {
     if (high) interactive.incrementAndGet();
     try {
       Path cached = cached(video, format, fragment);
@@ -130,7 +137,7 @@ public class FragmentManager {
           Path tmpAudio = temporary(target);
           try {
             download(audioSource, tmpAudio, high, created);
-            tmpFinal = remux(tmpVideo, tmpAudio, temporary(target));
+            tmpFinal = remux(tmpVideo, tmpAudio, temporary(target), startSeconds);
           } finally {
             Files.deleteIfExists(tmpAudio);
             Files.deleteIfExists(tmpVideo);
@@ -158,17 +165,22 @@ public class FragmentManager {
 
   /** Open a cached fragment with a lease that protects it from eviction. */
   public InputStream open(String video, String format, String fragment, URI source, boolean high) throws Exception {
-    return open(video, format, fragment, source, null, high);
+    return open(video, format, fragment, source, null, 0d, high);
   }
 
   public InputStream open(String video, String format, String fragment, URI videoSource,
                           URI audioSource, boolean high) throws Exception {
+    return open(video, format, fragment, videoSource, audioSource, 0d, high);
+  }
+
+  public InputStream open(String video, String format, String fragment, URI videoSource,
+                          URI audioSource, double startSeconds, boolean high) throws Exception {
     // Acquire the lease before resolving/fetching the path. This closes the
     // eviction race where maintenance could delete a fragment between the
     // cache lookup and opening the stream.
     markActive(video, format, 0, 1);
     try {
-      Path path = get(video, format, fragment, videoSource, audioSource, high);
+      Path path = get(video, format, fragment, videoSource, audioSource, startSeconds, high);
       InputStream delegate = Files.newInputStream(path);
       return new FilterInputStream(delegate) {
         private boolean closed;
@@ -236,15 +248,41 @@ public class FragmentManager {
   }
 
   private void download(URI source, Path target, boolean high, Inflight owner) throws Exception {
+    Exception failure = null;
+    for (int attempt = 0; attempt < 4; attempt++) {
+      try {
+        downloadOnce(source, target, high, owner);
+        return;
+      } catch (ExpiredSourceException e) {
+        throw e;
+      } catch (IOException | RetryableUpstreamException e) {
+        failure = e;
+        Files.deleteIfExists(target);
+        if (attempt == 3) break;
+        Thread.sleep(250L << attempt);
+      }
+    }
+    throw failure;
+  }
+
+  private void downloadOnce(URI source, Path target, boolean high, Inflight owner) throws Exception {
     if (source == null) throw new IllegalArgumentException("missing source URL");
     HttpRequest request = HttpRequest.newBuilder(source).GET().build();
     // Read in bounded chunks instead of BodyHandlers.ofFile so a low-priority
     // transfer can yield between reads when unrelated playback is active.
     HttpResponse<InputStream> response = client().send(request, HttpResponse.BodyHandlers.ofInputStream());
-    if (response.statusCode() == 401 || response.statusCode() == 403 || response.statusCode() == 410)
+    if (response.statusCode() == 401 || response.statusCode() == 403 || response.statusCode() == 410) {
+      response.body().close();
       throw new ExpiredSourceException();
-    if (response.statusCode() < 200 || response.statusCode() > 299)
+    }
+    if (response.statusCode() == 408 || response.statusCode() == 429 || response.statusCode() >= 500) {
+      response.body().close();
+      throw new RetryableUpstreamException(response.statusCode());
+    }
+    if (response.statusCode() < 200 || response.statusCode() > 299) {
+      response.body().close();
       throw new IllegalStateException("upstream status " + response.statusCode());
+    }
     long started = System.nanoTime();
     long bytes = 0;
     try (InputStream in = response.body(); var out = Files.newOutputStream(target)) {
@@ -319,13 +357,21 @@ public class FragmentManager {
     }
   }
 
-  private Path remux(Path video, Path audio, Path output) throws Exception {
+  private Path remux(Path video, Path audio, Path output, double expectedStart) throws Exception {
     String ffmpeg = setting("ffmpeg_path", "ffmpeg");
+    Double videoStart = streamStart(video, ffmpeg);
+    Double audioStart = streamStart(audio, ffmpeg);
+    var command = new java.util.ArrayList<String>();
+    command.add(ffmpeg);
+    command.addAll(java.util.List.of("-hide_banner", "-loglevel", "error", "-copyts", "-i", video.toString()));
+    double offset = audioOffset(videoStart, audioStart, expectedStart);
+    if (Math.abs(offset) > 0.000_001d)
+      command.addAll(java.util.List.of("-itsoffset", String.format(Locale.ROOT, "%.6f", offset)));
+    command.addAll(java.util.List.of("-i", audio.toString(), "-map", "0:v:0", "-map", "1:a:0", "-c", "copy",
+        "-muxpreload", "0", "-muxdelay", "0", "-f", "mpegts", "-mpegts_copyts", "1", "-y", output.toString()));
     Process process;
     try {
-      process = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-copyts", "-i", video.toString(),
-          "-i", audio.toString(), "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-f", "mpegts", "-mpegts_copyts", "1", "-y", output.toString())
-          .redirectErrorStream(true).start();
+      process = new ProcessBuilder(command).redirectErrorStream(true).start();
     } catch (IOException e) {
       throw new IOException("ffmpeg executable is unavailable: " + ffmpeg
           + ". Install ffmpeg or set the ffmpeg_path setting to its absolute path.", e);
@@ -334,6 +380,51 @@ public class FragmentManager {
     if (process.waitFor() != 0 || !Files.isRegularFile(output) || Files.size(output) == 0)
       throw new IOException("stream-copy remux failed" + (outputLog.length == 0 ? "" : ": " + new String(outputLog)));
     return output;
+  }
+
+  /**
+   * DASH video fragments retain their presentation timestamp while audio
+   * fragments commonly restart at zero. Preserve the video timeline and move
+   * audio onto it so every cached HLS fragment has one shared clock.
+   */
+  private Double streamStart(Path media, String ffmpeg) throws Exception {
+    String ffprobe = ffprobePath(ffmpeg);
+    Process process;
+    try {
+      process = new ProcessBuilder(ffprobe, "-v", "error", "-show_entries", "stream=start_time",
+          "-of", "default=noprint_wrappers=1:nokey=1", media.toString())
+          .redirectErrorStream(true).start();
+    } catch (IOException e) {
+      return null;
+    }
+    String result = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
+    if (process.waitFor() != 0) return null;
+    return parseStreamStart(result);
+  }
+
+  static Double parseStreamStart(String result) {
+    if (result == null || result.isBlank()) return null;
+    try {
+      double start = Double.parseDouble(result.lines().findFirst().orElseThrow());
+      return Double.isFinite(start) ? start : null;
+    } catch (NumberFormatException e) {
+      return null;
+    }
+  }
+
+  static double audioOffset(Double videoStart, Double audioStart, double expectedStart) {
+    double destination = videoStart == null ? Math.max(0d, expectedStart) : videoStart;
+    return destination - (audioStart == null ? 0d : audioStart);
+  }
+
+  private static String ffprobePath(String ffmpeg) {
+    Path path = Path.of(ffmpeg);
+    Path name = path.getFileName();
+    if (name != null && name.toString().equals("ffmpeg")) {
+      Path parent = path.getParent();
+      return parent == null ? "ffprobe" : parent.resolve("ffprobe").toString();
+    }
+    return "ffprobe";
   }
 
   private void upsert(String video, String format, String fragment, Path path) throws IOException {
@@ -397,4 +488,7 @@ public class FragmentManager {
   private static String key(String video, String format, String fragment) { return video + "/" + format + "/" + fragment; }
   static String safe(String value) { return value.replaceAll("[^A-Za-z0-9._-]", "_"); }
   public static class ExpiredSourceException extends Exception { }
+  private static final class RetryableUpstreamException extends Exception {
+    RetryableUpstreamException(int status) { super("temporary upstream status " + status); }
+  }
 }

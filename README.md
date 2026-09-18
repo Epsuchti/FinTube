@@ -27,7 +27,7 @@ docker compose -f docker-compose.dev.yml up -d
 
 The provider is bound only to `127.0.0.1:4416`. In IntelliJ, run the Spring Boot application with the `local` profile (for example, add `-Dspring.profiles.active=local` to VM options). Set `yt_dlp_path` to the path printed by the bootstrap script and set `ffmpeg_path` to your local ffmpeg binary (for example `/opt/homebrew/bin/ffmpeg`). Keep **PO token provider enabled** in the admin UI; its address is selected automatically by the active deployment. Start the Angular app with `cd client && npm start`. Stop the provider with `docker compose -f docker-compose.dev.yml down`.
 
-The same development Compose file also starts Jellyfin at `http://127.0.0.1:8096` and mounts `server/data/users` read-only at `/media/users`. For local Jellyfin playback, set FinTube's `public_base_url` to `http://host.docker.internal:8080`, create a Jellyfin library for the matching `/media/users/<user>` directory, and set FinTube's `jellyfin_url` to `http://127.0.0.1:8096` after completing the Jellyfin setup wizard.
+The same development Compose file also starts Jellyfin at `http://127.0.0.1:8096` and mounts `server/data/users` read-only at `/media/users`. The `local` Spring profile defaults FinTube's `public_base_url` to `http://host.docker.internal:8080` for Jellyfin playback, updates existing stock `localhost` `.strm` links once, and preserves an administrator-selected URL. Create a Jellyfin library for the matching `/media/users/<user>` directory and set FinTube's `jellyfin_url` to `http://127.0.0.1:8096` after completing the Jellyfin setup wizard.
 
 Verify the host setup before debugging playback:
 

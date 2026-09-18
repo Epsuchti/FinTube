@@ -87,11 +87,11 @@ public class BackgroundFillService {
         if (cancelled(id)) return;
         if (!fragments.isCached(video, source.format(), part.id())) {
           try {
-            fragments.get(video, source.format(), part.id(), part.url(), part.audioUrl(), false);
+            fragments.get(video, source.format(), part.id(), part.url(), part.audioUrl(), part.startSeconds(), false);
           } catch (FragmentManager.ExpiredSourceException expired) {
             source = sources.refresh(video);
             MediaSourceService.Fragment fresh = source.fragments().stream().filter(x -> x.id().equals(part.id())).findFirst().orElseThrow();
-            fragments.get(video, source.format(), fresh.id(), fresh.url(), fresh.audioUrl(), false);
+            fragments.get(video, source.format(), fresh.id(), fresh.url(), fresh.audioUrl(), fresh.startSeconds(), false);
           }
         }
         completed++;

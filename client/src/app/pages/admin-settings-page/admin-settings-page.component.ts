@@ -28,7 +28,6 @@ export class AdminSettingsPageComponent implements OnInit {
         cache_retention_days: 'Cache retention (days)',
         cache_min_free_gb: 'Minimum free cache space (GB)',
         background_download_max_mbps: 'Background download limit (Mbps)',
-        newest_videos_to_download: 'Newest videos to prefetch',
         youtube_api_key: 'YouTube Data API key',
         initial_channel_import_count: 'Initial channel import count',
         subscription_sync_minutes: 'Subscription sync interval (minutes)',
@@ -63,7 +62,7 @@ export class AdminSettingsPageComponent implements OnInit {
         },
         {
             title: 'Cache',
-            keys: ['cache_retention_days', 'cache_min_free_gb', 'background_download_max_mbps', 'newest_videos_to_download']
+            keys: ['cache_retention_days', 'cache_min_free_gb', 'background_download_max_mbps']
         },
         {
             title: 'YouTube',
