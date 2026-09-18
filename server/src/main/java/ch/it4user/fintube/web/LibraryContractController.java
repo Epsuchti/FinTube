@@ -4,6 +4,8 @@ import ch.it4user.fintube.service.LibraryApplicationService;
 
 import ch.it4user.fintube.api.contract.LibraryApi;
 import ch.it4user.fintube.api.contract.model.AddSubscriptionRequest;
+import ch.it4user.fintube.api.contract.model.ImportChannelsResult;
+import ch.it4user.fintube.api.contract.model.ImportCookiesRequest;
 import ch.it4user.fintube.api.contract.model.RefreshResult;
 import ch.it4user.fintube.api.contract.model.ToggleSubscriptionRequest;
 import ch.it4user.fintube.api.contract.model.Video;
@@ -32,6 +34,11 @@ public class LibraryContractController implements LibraryApi {
     public ResponseEntity<Void> addSubscription(AddSubscriptionRequest request) {
         library.addSubscription(requestContext, request);
         return ResponseEntity.ok().build();
+    }
+
+    @Override
+    public ResponseEntity<ImportChannelsResult> importSubscriptionsFromCookies(ImportCookiesRequest request) {
+        return ResponseEntity.ok(library.importSubscriptionsFromCookies(requestContext, request));
     }
 
     @Override

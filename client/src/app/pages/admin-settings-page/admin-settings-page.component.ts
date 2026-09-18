@@ -18,6 +18,16 @@ interface SettingGroup {
 export class AdminSettingsPageComponent implements OnInit {
     private readonly adminApi = inject(AdminService);
 
+    readonly streamQualityOptions = [
+        {value: '480', label: '480p'},
+        {value: '720', label: '720p'},
+        {value: '1080', label: '1080p'},
+        {value: '1440', label: '1440p'},
+        {value: '2160', label: '2160p (4K)'},
+        {value: 'best-compatible', label: 'Best compatible'},
+        {value: 'best', label: 'Best available'}
+    ];
+
     readonly settingLabels: Record<string, string> = {
         stream_quality: 'Stream quality',
         allowed_video_codecs: 'Allowed video codecs',
@@ -96,9 +106,16 @@ export class AdminSettingsPageComponent implements OnInit {
     }
 
     helpFor(key: string): string {
+        if (key === 'stream_quality') return 'Maximum video height for the shared YouTube source. Best compatible allows codec filtering to choose the highest playable option.';
+        if (key === 'cache_min_free_gb') return 'The cache evicts the oldest inactive fragments when the filesystem drops below this free-space reserve.';
+        if (key === 'background_download_max_mbps') return 'Maximum rate for low-priority prefetch jobs. Playback traffic is not limited by this setting.';
         if (key === 'youtube_po_token_provider_enabled') return 'Leave enabled. The provider address is configured by the deployment, not here.';
-        if (key === 'youtube_po_token') return 'Usually leave blank. Use only a manually generated CLIENT.CONTEXT+TOKEN value.';
+        if (key === 'youtube_po_token') return 'Usually leave blank. Use only a manually generated CLIENT.CONTEXT+TOKEN value when the automatic provider is unavailable.';
         return this.secretSettings.has(key) ? 'Secret · stored server-side and never shown to normal users' : 'Administrator-controlled global value';
+    }
+
+    isStreamQuality(key: string): boolean {
+        return key === 'stream_quality';
     }
 
     isBoolean(key: string): boolean {

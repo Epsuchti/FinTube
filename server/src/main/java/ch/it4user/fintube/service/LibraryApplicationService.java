@@ -1,6 +1,8 @@
 package ch.it4user.fintube.service;
 
 import ch.it4user.fintube.api.contract.model.AddSubscriptionRequest;
+import ch.it4user.fintube.api.contract.model.ImportChannelsResult;
+import ch.it4user.fintube.api.contract.model.ImportCookiesRequest;
 import ch.it4user.fintube.api.contract.model.RefreshResult;
 import ch.it4user.fintube.api.contract.model.Subscription;
 import ch.it4user.fintube.api.contract.model.ToggleSubscriptionRequest;
@@ -28,6 +30,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 import jakarta.servlet.http.HttpServletRequest;
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -36,16 +40,28 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.attribute.PosixFilePermission;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class LibraryApplicationService {
     private static final Logger LOG = LoggerFactory.getLogger(LibraryApplicationService.class);
+    private static final int MAX_COOKIE_BYTES = 5_000_000;
+    private static final int MAX_SUBSCRIPTION_FEED_ITEMS = 5_000;
+    private static final Duration COOKIE_IMPORT_TIMEOUT = Duration.ofSeconds(180);
+    private static final Pattern YOUTUBE_CHANNEL_ID = Pattern.compile("(?<![A-Za-z0-9_-])(UC[A-Za-z0-9_-]{20,})(?![A-Za-z0-9_-])");
     private final SettingsService settings;
     private final ApplicationPaths paths;
     private final YouTubeChannelRepository channels;
@@ -90,17 +106,53 @@ public class LibraryApplicationService {
         database(() -> {
             AuthService.Principal principal = authorization.requireUser(request);
             Channel channel = resolve(required(requestBody.getChannel(), "channel"));
-            YouTubeChannelEntity canonical = channels.findById(channel.id())
-                    .orElseGet(() -> new YouTubeChannelEntity(channel.id(), channel.name(), channel.url(), ApplicationClock.now()));
-            canonical.setName(channel.name());
-            canonical.setUrl(channel.url());
-            canonical.setUpdatedAt(ApplicationClock.now());
-            if (canonical.getInitialImportCount() == null) canonical.setInitialImportCount(initialImportCount());
-            if (canonical.getDownloadCount() == null) canonical.setDownloadCount(0);
-            channels.save(canonical);
-            subscriptions.save(new YouTubeSubscriptionEntity(principal.id(), channel.id(), 1, ApplicationClock.now()));
-            audit.event("SUBSCRIPTION_ADDED", Map.of("userId", principal.id(), "channelId", channel.id()));
+            if (saveSubscription(principal.id(), channel)) {
+                audit.event("SUBSCRIPTION_ADDED", Map.of("userId", principal.id(), "channelId", channel.id()));
+            }
             return null;
+        });
+    }
+
+    @Transactional
+    public ImportChannelsResult importSubscriptionsFromCookies(HttpServletRequest request,
+                                                                ImportCookiesRequest requestBody) {
+        return database(() -> {
+            AuthService.Principal principal = authorization.requireUser(request);
+            String cookies = required(requestBody == null ? null : requestBody.getCookies(), "cookies");
+            byte[] cookieBytes = cookies.getBytes(StandardCharsets.UTF_8);
+            if (cookieBytes.length > MAX_COOKIE_BYTES) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "cookie file is too large");
+            }
+            if (!looksLikeNetscapeCookieFile(cookies)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "upload a Netscape-format YouTube cookies.txt file");
+            }
+
+            Path cookieFile = Files.createTempFile(paths.root, "youtube-import-", ".cookies.txt");
+            restrictToOwner(cookieFile);
+            try {
+                Files.write(cookieFile, cookieBytes);
+                List<Channel> discovered = discoverSubscriptionChannels(cookieFile);
+                if (discovered.isEmpty()) {
+                    throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                            "no YouTube subscription channels were found");
+                }
+                int imported = 0;
+                int skipped = 0;
+                for (Channel channel : discovered) {
+                    if (saveSubscription(principal.id(), channel)) imported++;
+                    else skipped++;
+                }
+                audit.event("SUBSCRIPTIONS_IMPORTED", Map.of(
+                        "userId", principal.id(), "imported", imported, "skipped", skipped));
+                return new ImportChannelsResult().imported(imported).skipped(skipped).failed(0);
+            } finally {
+                try {
+                    Files.deleteIfExists(cookieFile);
+                } catch (IOException cleanupFailure) {
+                    LOG.warn("Could not remove temporary YouTube cookie file", cleanupFailure);
+                }
+            }
         });
     }
 
@@ -216,6 +268,94 @@ public class LibraryApplicationService {
         }
     }
 
+    private boolean saveSubscription(long userId, Channel channel) {
+        YouTubeChannelEntity canonical = channels.findById(channel.id())
+                .orElseGet(() -> new YouTubeChannelEntity(channel.id(), channel.name(), channel.url(), ApplicationClock.now()));
+        canonical.setName(channel.name());
+        canonical.setUrl(channel.url());
+        canonical.setUpdatedAt(ApplicationClock.now());
+        if (canonical.getInitialImportCount() == null) canonical.setInitialImportCount(initialImportCount());
+        if (canonical.getDownloadCount() == null) canonical.setDownloadCount(0);
+        channels.save(canonical);
+        if (subscriptions.findByUserIdAndChannelId(userId, channel.id()).isPresent()) return false;
+        subscriptions.save(new YouTubeSubscriptionEntity(userId, channel.id(), 1, ApplicationClock.now()));
+        return true;
+    }
+
+    private List<Channel> discoverSubscriptionChannels(Path cookieFile) throws Exception {
+        String executable = settings.value("yt_dlp_path");
+        if (executable == null || executable.isBlank()) executable = "yt-dlp";
+        List<String> command = new ArrayList<>(List.of(
+                executable, "--ignore-config", "--flat-playlist", "--dump-single-json", "--skip-download",
+                "--no-warnings", "--playlist-end", Integer.toString(MAX_SUBSCRIPTION_FEED_ITEMS),
+                "--cookies", cookieFile.toString(), ":ytsubs"));
+        Process process;
+        try {
+            process = new ProcessBuilder(command).redirectErrorStream(false).start();
+        } catch (IOException failure) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    "yt-dlp executable is unavailable; configure yt_dlp_path or install yt-dlp", failure);
+        }
+        CompletableFuture<byte[]> output = readProcessStream(process.getInputStream());
+        CompletableFuture<byte[]> errors = readProcessStream(process.getErrorStream());
+        if (!process.waitFor(COOKIE_IMPORT_TIMEOUT.toSeconds(), TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            throw new ResponseStatusException(HttpStatus.GATEWAY_TIMEOUT,
+                    "YouTube subscription import timed out");
+        }
+        int exitCode = process.exitValue();
+        byte[] outputBytes = output.join();
+        errors.join();
+        if (exitCode != 0) {
+            LOG.warn("YouTube subscription import failed with yt-dlp exit code {}", exitCode);
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    "yt-dlp could not read the YouTube subscriptions feed");
+        }
+        JsonNode root = objectMapper.readTree(new String(outputBytes, StandardCharsets.UTF_8));
+        return channelsFromFeed(root);
+    }
+
+    private CompletableFuture<byte[]> readProcessStream(InputStream stream) {
+        return CompletableFuture.supplyAsync(() -> {
+            try (stream) {
+                return stream.readAllBytes();
+            } catch (IOException failure) {
+                throw new RuntimeException(failure);
+            }
+        });
+    }
+
+    private List<Channel> channelsFromFeed(JsonNode root) {
+        List<Channel> result = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        if (root == null || !root.path("entries").isArray()) return result;
+        for (JsonNode entry : root.path("entries")) {
+            String channelId = entry.path("channel_id").asText("");
+            if (channelId.isBlank()) channelId = channelId(entry.path("channel_url").asText(""));
+            if (channelId.isBlank() || !YOUTUBE_CHANNEL_ID.matcher(channelId).matches() || !seen.add(channelId)) continue;
+            String name = entry.path("channel").asText("");
+            if (name.isBlank()) name = entry.path("uploader").asText("");
+            if (name.isBlank()) name = channelId;
+            result.add(new Channel(channelId, name,
+                    "https://www.youtube.com/channel/" + channelId));
+        }
+        return result;
+    }
+
+    private static boolean looksLikeNetscapeCookieFile(String value) {
+        String normalized = value.startsWith("\uFEFF") ? value.substring(1) : value;
+        return normalized.lines().anyMatch(line -> line.startsWith("# Netscape HTTP Cookie File")
+                || line.startsWith("# HTTP Cookie File"));
+    }
+
+    private static void restrictToOwner(Path file) {
+        try {
+            Files.setPosixFilePermissions(file,
+                    Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+        } catch (UnsupportedOperationException | IOException ignored) {
+        }
+    }
+
     private Video video(LibraryVideoRepository.VideoView value, long retention) {
         String accessed = value.getCacheLastAccessedAt();
         String expires = accessed == null ? null : Instant.parse(accessed).plus(Duration.ofDays(retention)).toString();
@@ -235,17 +375,22 @@ public class LibraryApplicationService {
     }
 
     private Channel resolve(String raw) throws Exception {
-        String id = raw.matches("UC[A-Za-z0-9_-]{20,}") ? raw : null;
+        String id = channelId(raw);
         String key = settings.value("youtube_api_key");
         if (key == null || key.isBlank()) throw new ResponseStatusException(HttpStatus.PRECONDITION_REQUIRED, "administrator must configure YouTube Data API key");
-        String endpoint = id != null
+        String endpoint = !id.isBlank()
                 ? "https://www.googleapis.com/youtube/v3/channels?part=snippet&id=" + id + "&key=" + URLEncoder.encode(key, StandardCharsets.UTF_8)
                 : "https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&maxResults=1&q=" + URLEncoder.encode(raw, StandardCharsets.UTF_8) + "&key=" + URLEncoder.encode(key, StandardCharsets.UTF_8);
         JsonNode root = objectMapper.readTree(http.send(HttpRequest.newBuilder(URI.create(endpoint)).GET().build(), HttpResponse.BodyHandlers.ofString()).body());
         if (!root.path("items").isArray() || root.path("items").isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "channel not found");
         JsonNode item = root.path("items").get(0);
-        String channelId = id != null ? item.path("id").asText() : item.path("id").path("channelId").asText();
+        String channelId = !id.isBlank() ? item.path("id").asText() : item.path("id").path("channelId").asText();
         return new Channel(channelId, item.path("snippet").path("title").asText(), "https://www.youtube.com/channel/" + channelId);
+    }
+
+    private static String channelId(String value) {
+        Matcher matcher = YOUTUBE_CHANNEL_ID.matcher(value == null ? "" : value);
+        return matcher.find() ? matcher.group(1) : "";
     }
 
     private <T> T database(Callable<T> operation) {

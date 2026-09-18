@@ -1,0 +1,12 @@
+databaseChangeLog:
+  - changeSet:
+      id: 006-fix-subscription-unique-constraint
+      author: fintube
+      changes:
+        - dropUniqueConstraint:
+            tableName: youtube_subscriptions
+            constraintName: uq_subscription
+        - addUniqueConstraint:
+            tableName: youtube_subscriptions
+            columnNames: "user_id,channel_id"
+            constraintName: uq_subscription

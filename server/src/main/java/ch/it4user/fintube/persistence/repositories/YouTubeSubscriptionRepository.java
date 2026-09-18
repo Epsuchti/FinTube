@@ -25,6 +25,7 @@ public interface YouTubeSubscriptionRepository extends JpaRepository<YouTubeSubs
   List<UserSubscriptionView> findForUser(@Param("userId") long userId);
   List<YouTubeSubscriptionEntity> findByChannelIdAndEnabled(String channelId, int enabled);
   Optional<YouTubeSubscriptionEntity> findByIdAndUserId(Long id, Long userId);
+  Optional<YouTubeSubscriptionEntity> findByUserIdAndChannelId(Long userId, String channelId);
   Optional<YouTubeSubscriptionEntity> findByUserIdAndChannelIdAndEnabled(Long userId, String channelId, int enabled);
   @Query("select distinct s.channelId from YouTubeSubscriptionEntity s, YouTubeChannelEntity c "
       + "where s.channelId = c.channelId and s.enabled = 1 and (c.lastSyncAt is null or c.lastSyncAt < :cutoff)")

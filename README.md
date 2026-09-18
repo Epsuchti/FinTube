@@ -62,6 +62,8 @@ The admin settings `jellyfin_url` and `jellyfin_api_key` enable the REST integra
 
 Both are optional administrator settings. `cookie_file` passes an exported Netscape cookie file to yt-dlp; it is encrypted at rest and never returned by the API. `youtube_po_token` accepts yt-dlp's `CLIENT.CONTEXT+TOKEN` value (for example `mweb.gvs+…`) and `youtube_player_client` selects the matching client.
 
+The Subscriptions page also offers **Import from YouTube**. Choose a Netscape-format `cookies.txt` export from a YouTube-only browser profile; FinTube passes it once to yt-dlp's authenticated subscriptions feed, adds the discovered channels to the current user, and deletes the temporary copy. The cookie contents are not stored in the database. Because the import reads the subscription feed, channels with no item in the feed may need to be added manually afterward.
+
 The Compose deployment enables the BgUtils yt-dlp plugin and supplies its internal `pot-provider` address through `FINTUBE_YOUTUBE_PO_TOKEN_PROVIDER_URL`. The provider has no host port and must stay that way: it is unauthenticated. The local profile supplies `http://127.0.0.1:4416` instead. A manual PO token is optional and normally left blank. Set `youtube_po_token_provider_enabled=false` to run without the provider; FinTube retries a probe without it if it is unavailable. See the [yt-dlp PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide) and the [BgUtils provider instructions](https://github.com/Brainicism/bgutil-ytdlp-pot-provider).
 
 ## Verification
