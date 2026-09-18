@@ -65,7 +65,9 @@
         <div class="subscription-editor">
           <div class="editor-heading"><div><p class="eyebrow">CHANNEL SETTINGS</p><h4>Import and download behavior</h4></div><button class="link-button" type="button" (click)="cancelEdit()">Close</button></div>
           <div class="editor-fields">
-            <label>Initial videos<input type="number" min="1" max="1000" [ngModel]="importCount(subscription)" (ngModelChange)="setImportCount(subscription, $event)" [disabled]="loading()"><small class="muted">How much history the next reimport discovers.</small></label>
+            <label>Videos<input type="number" min="0" max="1000" [ngModel]="importCount(subscription)" (ngModelChange)="setImportCount(subscription, $event)" [disabled]="loading()"><small class="muted">Regular videos to import on the next reimport.</small></label>
+            <label>Shorts<input type="number" min="0" max="1000" [ngModel]="shortImportCount(subscription)" (ngModelChange)="setShortImportCount(subscription, $event)" [disabled]="loading()"><small class="muted">Shorts to import on the next reimport.</small></label>
+            <label>Past live streams<input type="number" min="0" max="1000" [ngModel]="liveStreamImportCount(subscription)" (ngModelChange)="setLiveStreamImportCount(subscription, $event)" [disabled]="loading()"><small class="muted">Completed live streams to import.</small></label>
             <label>Download newest<input type="number" min="0" max="1000" [ngModel]="downloadCount(subscription)" (ngModelChange)="setDownloadCount(subscription, $event)" [disabled]="loading()"><small class="muted">Prefetch this many videos into the shared cache.</small></label>
           </div>
           <div class="editor-actions"><button class="primary" type="button" (click)="saveSubscription(subscription)" [disabled]="loading()">Save changes</button><button type="button" (click)="reimportSubscription(subscription)" [disabled]="loading() || !enabled(subscription)">Save &amp; reimport</button></div>

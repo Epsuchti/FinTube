@@ -1,0 +1,8 @@
+databaseChangeLog:
+  - changeSet:
+      id: 011-remove-global-youtube-api-key
+      author: fintube
+      changes:
+        - delete:
+            tableName: settings
+            where: "key = 'youtube_api_key'"

@@ -20,6 +20,8 @@ public class YouTubeChannelEntity {
   @Column(name = "last_sync_published_at", length = 64) private String lastSyncPublishedAt;
   @Column(name = "uploads_playlist_id", length = 255) private String uploadsPlaylistId;
   @Column(name = "initial_import_count") private Integer initialImportCount;
+  @Column(name = "short_import_count") private Integer shortImportCount;
+  @Column(name = "live_stream_import_count") private Integer liveStreamImportCount;
   @Column(name = "download_count") private Integer downloadCount;
   @Lob @Column(name = "sync_error") private String syncError;
   protected YouTubeChannelEntity() { }
@@ -36,6 +38,8 @@ public class YouTubeChannelEntity {
   public String getLastSyncPublishedAt() { return lastSyncPublishedAt; }
   public String getUploadsPlaylistId() { return uploadsPlaylistId; }
   public Integer getInitialImportCount() { return initialImportCount; }
+  public Integer getShortImportCount() { return shortImportCount; }
+  public Integer getLiveStreamImportCount() { return liveStreamImportCount; }
   public Integer getDownloadCount() { return downloadCount; }
   public String getSyncError() { return syncError; }
   public void setName(String name) { this.name = name; }
@@ -47,6 +51,8 @@ public class YouTubeChannelEntity {
   public void setLastSyncPublishedAt(String value) { lastSyncPublishedAt = value; }
   public void setUploadsPlaylistId(String value) { uploadsPlaylistId = value; }
   public void setInitialImportCount(Integer value) { initialImportCount = value; }
+  public void setShortImportCount(Integer value) { shortImportCount = value; }
+  public void setLiveStreamImportCount(Integer value) { liveStreamImportCount = value; }
   public void setDownloadCount(Integer value) { downloadCount = value; }
   public void setSyncError(String value) { syncError = value; }
 }

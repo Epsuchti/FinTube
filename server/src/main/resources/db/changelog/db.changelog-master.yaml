@@ -11,3 +11,11 @@ databaseChangeLog:
       file: db/changelog/006-fix-subscription-unique-constraint.yaml
   - include:
       file: db/changelog/007-uploads-playlist.yaml
+  - include:
+      file: db/changelog/008-channel-import-categories.yaml
+  - include:
+      file: db/changelog/009-import-category-defaults.yaml
+  - include:
+      file: db/changelog/010-user-youtube-api-key.yaml
+  - include:
+      file: db/changelog/011-remove-global-youtube-api-key.yaml

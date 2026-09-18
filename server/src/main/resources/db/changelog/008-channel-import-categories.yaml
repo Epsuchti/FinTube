@@ -1,0 +1,10 @@
+databaseChangeLog:
+  - changeSet:
+      id: 008-channel-import-categories
+      author: fintube
+      changes:
+        - addColumn:
+            tableName: youtube_channels
+            columns:
+              - column: {name: short_import_count, type: integer, defaultValueNumeric: 0}
+              - column: {name: live_stream_import_count, type: integer, defaultValueNumeric: 0}

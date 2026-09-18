@@ -24,6 +24,8 @@ export class SubscriptionsPageComponent implements OnInit {
     readonly error = signal('');
     readonly notice = signal('');
     readonly importCounts = signal<Record<number, number>>({});
+    readonly shortImportCounts = signal<Record<number, number>>({});
+    readonly liveStreamImportCounts = signal<Record<number, number>>({});
     readonly downloadCounts = signal<Record<number, number>>({});
     readonly editingId = signal<number | null>(null);
     readonly cookieImportOpen = signal(false);
@@ -140,6 +142,8 @@ export class SubscriptionsPageComponent implements OnInit {
             toggleSubscriptionRequest: {
                 enabled: this.enabled(subscription),
                 initial_import_count: values.initialImportCount,
+                short_import_count: values.shortImportCount,
+                live_stream_import_count: values.liveStreamImportCount,
                 download_count: values.downloadCount
             }
         }).subscribe({
@@ -197,6 +201,8 @@ export class SubscriptionsPageComponent implements OnInit {
             toggleSubscriptionRequest: {
                 enabled: this.enabled(subscription),
                 initial_import_count: values.initialImportCount,
+                short_import_count: values.shortImportCount,
+                live_stream_import_count: values.liveStreamImportCount,
                 download_count: values.downloadCount
             }
         }).pipe(switchMap(() => this.libraryApi.refreshSubscription({id: subscription.id}))).subscribe({
@@ -242,6 +248,22 @@ export class SubscriptionsPageComponent implements OnInit {
         this.importCounts.update(current => ({...current, [subscription.id]: count}));
     }
 
+    shortImportCount(subscription: Subscription): number {
+        return this.shortImportCounts()[subscription.id] ?? subscription.short_import_count;
+    }
+
+    setShortImportCount(subscription: Subscription, value: string | number): void {
+        this.shortImportCounts.update(current => ({...current, [subscription.id]: Number(value)}));
+    }
+
+    liveStreamImportCount(subscription: Subscription): number {
+        return this.liveStreamImportCounts()[subscription.id] ?? subscription.live_stream_import_count;
+    }
+
+    setLiveStreamImportCount(subscription: Subscription, value: string | number): void {
+        this.liveStreamImportCounts.update(current => ({...current, [subscription.id]: Number(value)}));
+    }
+
     downloadCount(subscription: Subscription): number {
         return this.downloadCounts()[subscription.id] ?? subscription.download_count;
     }
@@ -257,6 +279,8 @@ export class SubscriptionsPageComponent implements OnInit {
             next: rows => {
                 this.subscriptions.set(rows);
                 this.importCounts.set(Object.fromEntries(rows.map(row => [row.id, row.initial_import_count])));
+                this.shortImportCounts.set(Object.fromEntries(rows.map(row => [row.id, row.short_import_count])));
+                this.liveStreamImportCounts.set(Object.fromEntries(rows.map(row => [row.id, row.live_stream_import_count])));
                 this.downloadCounts.set(Object.fromEntries(rows.map(row => [row.id, row.download_count])));
                 if (!rows.some(row => row.id === this.editingId())) this.editingId.set(null);
                 this.loading.set(false);
@@ -283,10 +307,12 @@ export class SubscriptionsPageComponent implements OnInit {
         return fallback;
     }
 
-    private subscriptionSettings(subscription: Subscription): {initialImportCount: number; downloadCount: number} | null {
+    private subscriptionSettings(subscription: Subscription): {initialImportCount: number; shortImportCount: number; liveStreamImportCount: number; downloadCount: number} | null {
         const initialImportCount = this.importCount(subscription);
-        if (!Number.isInteger(initialImportCount) || initialImportCount < 1 || initialImportCount > 1000) {
-            this.error.set('Initial import count must be between 1 and 1000.');
+        const shortImportCount = this.shortImportCount(subscription);
+        const liveStreamImportCount = this.liveStreamImportCount(subscription);
+        if (![initialImportCount, shortImportCount, liveStreamImportCount].every(value => Number.isInteger(value) && value >= 0 && value <= 1000)) {
+            this.error.set('Import counts must be between 0 and 1000.');
             return null;
         }
         const downloadCount = this.downloadCount(subscription);
@@ -294,7 +320,7 @@ export class SubscriptionsPageComponent implements OnInit {
             this.error.set('Download count must be between 0 and 1000.');
             return null;
         }
-        return {initialImportCount, downloadCount};
+        return {initialImportCount, shortImportCount, liveStreamImportCount, downloadCount};
     }
 
     private looksLikeNetscapeCookieFile(value: string): boolean {

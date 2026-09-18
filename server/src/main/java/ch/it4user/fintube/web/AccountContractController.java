@@ -6,6 +6,8 @@ import ch.it4user.fintube.api.contract.AccountApi;
 import ch.it4user.fintube.api.contract.model.ChangePasswordRequest;
 import ch.it4user.fintube.api.contract.model.Profile;
 import ch.it4user.fintube.api.contract.model.Role;
+import ch.it4user.fintube.api.contract.model.UpdateYouTubeApiKeyRequest;
+import ch.it4user.fintube.api.contract.model.YouTubeApiKeyStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -31,5 +33,15 @@ public class AccountContractController implements AccountApi {
     @Override
     public ResponseEntity<Profile> getCurrentUser() {
         return ResponseEntity.ok(account.currentUser(requestContext));
+    }
+
+    @Override
+    public ResponseEntity<YouTubeApiKeyStatus> getYouTubeApiKeyStatus() {
+        return ResponseEntity.ok(account.youtubeApiKeyStatus(requestContext));
+    }
+
+    @Override
+    public ResponseEntity<YouTubeApiKeyStatus> updateYouTubeApiKey(UpdateYouTubeApiKeyRequest request) {
+        return ResponseEntity.ok(account.updateYouTubeApiKey(requestContext, request));
     }
 }

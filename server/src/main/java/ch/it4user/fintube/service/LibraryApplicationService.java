@@ -70,6 +70,7 @@ public class LibraryApplicationService {
     private final LibraryVideoRepository videos;
     private final AuthorizationService authorization;
     private final YouTubeSyncService sync;
+    private final UserYouTubeApiKeyService youtubeApiKeys;
     private final AuditLogger audit;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final HttpClient http = HttpClient.newHttpClient();
@@ -82,7 +83,8 @@ public class LibraryApplicationService {
                                      LibraryVideoRepository videos,
                                      AuthorizationService authorization,
                                      YouTubeSyncService sync,
-                                     AuditLogger audit) {
+                                     AuditLogger audit,
+                                     UserYouTubeApiKeyService youtubeApiKeys) {
         this.settings = settings;
         this.paths = paths;
         this.channels = channels;
@@ -92,6 +94,7 @@ public class LibraryApplicationService {
         this.authorization = authorization;
         this.sync = sync;
         this.audit = audit;
+        this.youtubeApiKeys = youtubeApiKeys;
     }
 
     public List<Subscription> subscriptions(HttpServletRequest request) {
@@ -105,7 +108,7 @@ public class LibraryApplicationService {
     public void addSubscription(HttpServletRequest request, AddSubscriptionRequest requestBody) {
         database(() -> {
             AuthService.Principal principal = authorization.requireUser(request);
-            Channel channel = resolve(required(requestBody.getChannel(), "channel"));
+            Channel channel = resolve(principal.id(), required(requestBody.getChannel(), "channel"));
             if (saveSubscription(principal.id(), channel)) {
                 audit.event("SUBSCRIPTION_ADDED", Map.of("userId", principal.id(), "channelId", channel.id()));
             }
@@ -118,6 +121,7 @@ public class LibraryApplicationService {
                                                                 ImportCookiesRequest requestBody) {
         return database(() -> {
             AuthService.Principal principal = authorization.requireUser(request);
+            requireYouTubeApiKey(principal.id());
             String cookies = required(requestBody == null ? null : requestBody.getCookies(), "cookies");
             byte[] cookieBytes = cookies.getBytes(StandardCharsets.UTF_8);
             if (cookieBytes.length > MAX_COOKIE_BYTES) {
@@ -164,32 +168,41 @@ public class LibraryApplicationService {
                     .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
             subscription.setEnabled(Boolean.TRUE.equals(requestBody.getEnabled()) ? 1 : 0);
             Integer initialImportCount = requestBody.getInitialImportCount();
+            Integer shortImportCount = requestBody.getShortImportCount();
+            Integer liveStreamImportCount = requestBody.getLiveStreamImportCount();
             Integer downloadCount = requestBody.getDownloadCount();
+            YouTubeChannelEntity channel = channels.findById(subscription.getChannelId())
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
             if (initialImportCount != null) {
-                if (initialImportCount < 1 || initialImportCount > 1000) {
-                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "initial import count must be between 1 and 1000");
-                }
-                YouTubeChannelEntity channel = channels.findById(subscription.getChannelId())
-                        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+                validateImportCount(initialImportCount, "initial import count");
                 channel.setInitialImportCount(initialImportCount);
+            }
+            if (shortImportCount != null) {
+                validateImportCount(shortImportCount, "short import count");
+                channel.setShortImportCount(shortImportCount);
+            }
+            if (liveStreamImportCount != null) {
+                validateImportCount(liveStreamImportCount, "live stream import count");
+                channel.setLiveStreamImportCount(liveStreamImportCount);
+            }
+            if (initialImportCount != null || shortImportCount != null || liveStreamImportCount != null) {
                 channel.setLastSyncPublishedAt(null);
-                channels.save(channel);
             }
             if (downloadCount != null) {
                 if (downloadCount < 0 || downloadCount > 1000) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "download count must be between 0 and 1000");
                 }
-                YouTubeChannelEntity channel = channels.findById(subscription.getChannelId())
-                        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
                 channel.setDownloadCount(downloadCount);
-                channels.save(channel);
             }
+            channels.save(channel);
             subscriptions.save(subscription);
             Map<String, Object> auditFields = new java.util.LinkedHashMap<>();
             auditFields.put("userId", principal.id());
             auditFields.put("subscriptionId", id);
             auditFields.put("enabled", Boolean.TRUE.equals(requestBody.getEnabled()));
             if (initialImportCount != null) auditFields.put("initialImportCount", initialImportCount);
+            if (shortImportCount != null) auditFields.put("shortImportCount", shortImportCount);
+            if (liveStreamImportCount != null) auditFields.put("liveStreamImportCount", liveStreamImportCount);
             if (downloadCount != null) auditFields.put("downloadCount", downloadCount);
             audit.event("SUBSCRIPTION_UPDATED", auditFields);
             return null;
@@ -208,6 +221,7 @@ public class LibraryApplicationService {
     public RefreshResult refreshSubscription(HttpServletRequest request, long id) {
         return database(() -> {
             AuthService.Principal principal = authorization.requireUser(request);
+            requireYouTubeApiKey(principal.id());
             String channel = subscriptions.findByIdAndUserId(id, principal.id())
                     .filter(value -> value.getEnabled() == 1)
                     .map(YouTubeSubscriptionEntity::getChannelId)
@@ -253,8 +267,10 @@ public class LibraryApplicationService {
 
     private Subscription subscription(YouTubeSubscriptionRepository.UserSubscriptionView value) {
         int importCount = value.getInitialImportCount() == null ? initialImportCount() : value.getInitialImportCount();
+        int shortImportCount = value.getShortImportCount() == null ? 0 : value.getShortImportCount();
+        int liveStreamImportCount = value.getLiveStreamImportCount() == null ? 0 : value.getLiveStreamImportCount();
         int downloadCount = value.getDownloadCount() == null ? 0 : value.getDownloadCount();
-        return new Subscription(value.getId(), value.getChannelId(), value.getName(), booleanValue(value.getEnabled()), importCount, downloadCount)
+        return new Subscription(value.getId(), value.getChannelId(), value.getName(), booleanValue(value.getEnabled()), importCount, shortImportCount, liveStreamImportCount, downloadCount)
                 .url(value.getUrl())
                 .lastCheckedAt(value.getLastCheckedAt())
                 .lastSuccessfulSyncAt(value.getLastSuccessfulSyncAt());
@@ -262,9 +278,25 @@ public class LibraryApplicationService {
 
     private int initialImportCount() {
         try {
-            return Math.max(1, Math.min(1000, Integer.parseInt(settings.value("initial_channel_import_count"))));
+            return Math.max(0, Math.min(1000, Integer.parseInt(settings.value("initial_channel_import_count"))));
         } catch (RuntimeException ignored) {
             return 20;
+        }
+    }
+
+    private int initialShortImportCount() {
+        try {
+            return Math.max(0, Math.min(1000, Integer.parseInt(settings.value("initial_short_import_count"))));
+        } catch (RuntimeException ignored) {
+            return 0;
+        }
+    }
+
+    private int initialLiveStreamImportCount() {
+        try {
+            return Math.max(0, Math.min(1000, Integer.parseInt(settings.value("initial_live_stream_import_count"))));
+        } catch (RuntimeException ignored) {
+            return 0;
         }
     }
 
@@ -275,11 +307,19 @@ public class LibraryApplicationService {
         canonical.setUrl(channel.url());
         canonical.setUpdatedAt(ApplicationClock.now());
         if (canonical.getInitialImportCount() == null) canonical.setInitialImportCount(initialImportCount());
+        if (canonical.getShortImportCount() == null) canonical.setShortImportCount(initialShortImportCount());
+        if (canonical.getLiveStreamImportCount() == null) canonical.setLiveStreamImportCount(initialLiveStreamImportCount());
         if (canonical.getDownloadCount() == null) canonical.setDownloadCount(0);
         channels.save(canonical);
         if (subscriptions.findByUserIdAndChannelId(userId, channel.id()).isPresent()) return false;
         subscriptions.save(new YouTubeSubscriptionEntity(userId, channel.id(), 1, ApplicationClock.now()));
         return true;
+    }
+
+    private void validateImportCount(int value, String label) {
+        if (value < 0 || value > 1000) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, label + " must be between 0 and 1000");
+        }
     }
 
     private List<Channel> discoverSubscriptionChannels(Path cookieFile) throws Exception {
@@ -374,18 +414,37 @@ public class LibraryApplicationService {
                 .downloaded(booleanValue(value.getDownloaded()));
     }
 
-    private Channel resolve(String raw) throws Exception {
+    private Channel resolve(long userId, String raw) throws Exception {
         String id = channelId(raw);
-        String key = settings.value("youtube_api_key");
-        if (key == null || key.isBlank()) throw new ResponseStatusException(HttpStatus.PRECONDITION_REQUIRED, "administrator must configure YouTube Data API key");
+        String key = requireYouTubeApiKey(userId);
         String endpoint = !id.isBlank()
                 ? "https://www.googleapis.com/youtube/v3/channels?part=snippet&id=" + id + "&key=" + URLEncoder.encode(key, StandardCharsets.UTF_8)
                 : "https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&maxResults=1&q=" + URLEncoder.encode(raw, StandardCharsets.UTF_8) + "&key=" + URLEncoder.encode(key, StandardCharsets.UTF_8);
-        JsonNode root = objectMapper.readTree(http.send(HttpRequest.newBuilder(URI.create(endpoint)).GET().build(), HttpResponse.BodyHandlers.ofString()).body());
+        HttpResponse<String> response = http.send(
+                HttpRequest.newBuilder(URI.create(endpoint)).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            if (response.statusCode() == 404 && !id.isBlank()) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "channel not found");
+            }
+            LOG.warn("YouTube channel lookup failed with HTTP status {}", response.statusCode());
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    "YouTube Data API rejected the channel lookup; verify your API key and quota");
+        }
+        JsonNode root = objectMapper.readTree(response.body());
         if (!root.path("items").isArray() || root.path("items").isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "channel not found");
         JsonNode item = root.path("items").get(0);
         String channelId = !id.isBlank() ? item.path("id").asText() : item.path("id").path("channelId").asText();
         return new Channel(channelId, item.path("snippet").path("title").asText(), "https://www.youtube.com/channel/" + channelId);
+    }
+
+    private String requireYouTubeApiKey(long userId) {
+        String key = youtubeApiKeys.key(userId);
+        if (key == null || key.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.PRECONDITION_REQUIRED,
+                    "configure your YouTube Data API key in Account settings");
+        }
+        return key;
     }
 
     private static String channelId(String value) {

@@ -3,6 +3,8 @@ package ch.it4user.fintube.service;
 import ch.it4user.fintube.api.contract.model.ChangePasswordRequest;
 import ch.it4user.fintube.api.contract.model.Profile;
 import ch.it4user.fintube.api.contract.model.Role;
+import ch.it4user.fintube.api.contract.model.UpdateYouTubeApiKeyRequest;
+import ch.it4user.fintube.api.contract.model.YouTubeApiKeyStatus;
 import ch.it4user.fintube.core.AuditLogger;
 import ch.it4user.fintube.core.ApplicationClock;
 import ch.it4user.fintube.persistence.entities.UserEntity;
@@ -20,12 +22,15 @@ public class AccountApplicationService {
     private final AuthService auth;
     private final AuthorizationService authorization;
     private final AuditLogger audit;
+    private final UserYouTubeApiKeyService youtubeApiKeys;
 
-    public AccountApplicationService(UserRepository users, AuthService auth, AuthorizationService authorization, AuditLogger audit) {
+    public AccountApplicationService(UserRepository users, AuthService auth, AuthorizationService authorization,
+                                     AuditLogger audit, UserYouTubeApiKeyService youtubeApiKeys) {
         this.users = users;
         this.auth = auth;
         this.authorization = authorization;
         this.audit = audit;
+        this.youtubeApiKeys = youtubeApiKeys;
     }
 
     public Profile currentUser(HttpServletRequest request) {
@@ -47,5 +52,21 @@ public class AccountApplicationService {
         user.setUpdatedAt(ApplicationClock.now());
         users.save(user);
         audit.event("PASSWORD_CHANGED", java.util.Map.of("userId", principal.id()));
+    }
+
+    public YouTubeApiKeyStatus youtubeApiKeyStatus(HttpServletRequest request) {
+        AuthService.Principal principal = authorization.requireUser(request);
+        return new YouTubeApiKeyStatus(youtubeApiKeys.configured(principal.id()));
+    }
+
+    public YouTubeApiKeyStatus updateYouTubeApiKey(HttpServletRequest request, UpdateYouTubeApiKeyRequest requestBody) {
+        AuthService.Principal principal = authorization.requireUser(request);
+        if (requestBody == null || requestBody.getApiKey() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "api_key is required");
+        }
+        youtubeApiKeys.update(principal.id(), requestBody.getApiKey());
+        audit.event("YOUTUBE_API_KEY_UPDATED", java.util.Map.of(
+                "userId", principal.id(), "configured", !requestBody.getApiKey().isBlank()));
+        return new YouTubeApiKeyStatus(youtubeApiKeys.configured(principal.id()));
     }
 }

@@ -38,8 +38,9 @@ export class AdminSettingsPageComponent implements OnInit {
         cache_retention_days: 'Cache retention (days)',
         cache_min_free_gb: 'Minimum free cache space (GB)',
         background_download_max_mbps: 'Background download limit (Mbps)',
-        youtube_api_key: 'YouTube Data API key',
-        initial_channel_import_count: 'Initial channel import count',
+        initial_channel_import_count: 'Default videos to import',
+        initial_short_import_count: 'Default Shorts to import',
+        initial_live_stream_import_count: 'Default past live streams to import',
         subscription_sync_minutes: 'Subscription sync interval (minutes)',
         youtube_player_client: 'YouTube player client',
         youtube_po_token_provider_enabled: 'PO token provider enabled',
@@ -59,7 +60,6 @@ export class AdminSettingsPageComponent implements OnInit {
     };
 
     readonly secretSettings = new Set([
-        'youtube_api_key',
         'jellyfin_api_key',
         'proxy_password',
         'cookie_file',
@@ -76,7 +76,7 @@ export class AdminSettingsPageComponent implements OnInit {
         },
         {
             title: 'YouTube',
-            keys: ['youtube_api_key', 'initial_channel_import_count', 'subscription_sync_minutes', 'youtube_player_client', 'youtube_po_token_provider_enabled', 'youtube_po_token']
+            keys: ['initial_channel_import_count', 'initial_short_import_count', 'initial_live_stream_import_count', 'subscription_sync_minutes', 'youtube_player_client', 'youtube_po_token_provider_enabled', 'youtube_po_token']
         },
         {
             title: 'Jellyfin',

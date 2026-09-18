@@ -15,6 +15,7 @@ import ch.it4user.fintube.persistence.entities.YouTubeChannelEntity;
 import ch.it4user.fintube.persistence.repositories.YouTubeChannelRepository;
 import ch.it4user.fintube.persistence.entities.YouTubeSubscriptionEntity;
 import ch.it4user.fintube.persistence.repositories.YouTubeSubscriptionRepository;
+import ch.it4user.fintube.service.UserYouTubeApiKeyService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.data.domain.PageRequest;
@@ -65,6 +66,7 @@ public class YouTubeSyncService {
   final ApplicationPaths paths;
   final JellyfinSyncService jellyfin;
   final BackgroundFillService filler;
+  final UserYouTubeApiKeyService youtubeApiKeys;
   final ObjectMapper json = new ObjectMapper();
   final HttpClient http = HttpClient.newHttpClient();
   private final ConcurrentHashMap<String, Object> channelLocks = new ConcurrentHashMap<>();
@@ -73,7 +75,7 @@ public class YouTubeSyncService {
                             YouTubeSubscriptionRepository subscriptions, VideoRepository videos,
                             UserVideoRepository userVideos, UserRepository users,
                             ApplicationPaths paths, JellyfinSyncService jellyfin,
-                            BackgroundFillService filler) {
+                            BackgroundFillService filler, UserYouTubeApiKeyService youtubeApiKeys) {
     this.settings = settings;
     this.channels = channels;
     this.subscriptions = subscriptions;
@@ -83,11 +85,12 @@ public class YouTubeSyncService {
     this.paths = paths;
     this.jellyfin = jellyfin;
     this.filler = filler;
+    this.youtubeApiKeys = youtubeApiKeys;
   }
 
   /** Synchronize once, then ensure the requested user's known videos are linked. */
   public int sync(String channel, long userId) throws Exception {
-    int discovered = syncChannel(channel);
+    int discovered = syncChannel(channel, userId);
     linkExistingVideos(channel, userId);
     return discovered;
   }
@@ -97,24 +100,25 @@ public class YouTubeSyncService {
    * first run honors initial_channel_import_count; later runs use the
    * persisted latest published timestamp and fetch only newer pages.
    */
-  public int syncChannel(String channel) throws Exception {
+  public int syncChannel(String channel, long userId) throws Exception {
     if (channel == null || channel.isBlank()) throw new IllegalArgumentException("channel is required");
     Object lock = channelLocks.computeIfAbsent(channel, ignored -> new Object());
     synchronized (lock) {
-      return syncChannelLocked(channel);
+      return syncChannelLocked(channel, userId);
     }
   }
 
-  private int syncChannelLocked(String channel) throws Exception {
+  private int syncChannelLocked(String channel, long userId) throws Exception {
     Map<String, String> currentSettings = settings();
-    String key = currentSettings.get("youtube_api_key");
-    if (key == null || key.isBlank()) throw new IllegalStateException("YouTube API key is not configured");
+    String key = youtubeApiKeys.key(userId);
+    if (key == null || key.isBlank()) throw new IllegalStateException("YouTube Data API key is not configured for this user");
 
     String attemptAt = now();
     markChannelAttempt(channel, attemptAt);
     try {
       YouTubeChannelEntity channelEntity = channelEntity(channel);
       String cursor = channelEntity.getLastSyncPublishedAt();
+      boolean initial = cursor == null || cursor.isBlank();
       List<JsonNode> playlistItems = discover(channelEntity, key, cursor, currentSettings);
       List<String> ids = new ArrayList<>();
       String newestPublished = cursor;
@@ -131,16 +135,20 @@ public class YouTubeSyncService {
       for (String stale : staleVideoIds(channel)) if (!ids.contains(stale)) ids.add(stale);
 
       Set<String> returned = new HashSet<>();
+      List<String> importedIds = new ArrayList<>();
+      int[] categoryCounts = new int[3];
       int count = 0;
       for (int start = 0; start < ids.size(); start += 50) {
         int end = Math.min(ids.size(), start + 50);
         String batch = String.join(",", ids.subList(start, end));
-        JsonNode details = request("https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,status&id="
+        JsonNode details = request("https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,status,liveStreamingDetails&id="
             + enc(batch) + "&key=" + enc(key));
         for (JsonNode video : details.path("items")) {
           String videoId = video.path("id").asText();
           if (videoId.isBlank()) continue;
+          if (initial && !acceptedInitialCategory(video, channelEntity, categoryCounts, currentSettings)) continue;
           returned.add(videoId);
+          importedIds.add(videoId);
           boolean newVideo = upsertVideo(video, channel);
           newestPublished = maxPublished(newestPublished, video.path("snippet").path("publishedAt").asText());
           if (newVideo) count++;
@@ -150,7 +158,7 @@ public class YouTubeSyncService {
       // A result can disappear between playlistItems.list and videos.list because it
       // was deleted, made private, or rejected. Keep its metadata row but
       // explicitly mark it unavailable instead of presenting it as playable.
-      markMissingAsUnavailable(channel, ids, returned);
+      markMissingAsUnavailable(channel, importedIds, returned);
 
       String successAt = now();
       updateChannelSuccess(channel, successAt, newestPublished);
@@ -216,7 +224,9 @@ public class YouTubeSyncService {
   private List<JsonNode> discover(YouTubeChannelEntity channelEntity, String key, String cursor,
                                   Map<String, String> settings) throws Exception {
     boolean initial = cursor == null || cursor.isBlank();
-    int initialLimit = initialImportCount(channelEntity.getChannelId(), settings);
+    int initialLimit = initialImportCount(channelEntity.getChannelId(), settings)
+        + initialShortImportCount(channelEntity)
+        + initialLiveStreamImportCount(channelEntity);
     String playlistId = channelEntity.getUploadsPlaylistId();
     if (playlistId == null || playlistId.isBlank()) {
       playlistId = uploadsPlaylist(channelEntity.getChannelId(), key);
@@ -228,6 +238,7 @@ public class YouTubeSyncService {
     String page = null;
     int pages = 0;
     do {
+      if (initial && initialLimit == 0) return items;
       int remaining = initial ? Math.max(1, initialLimit - items.size()) : 50;
       StringBuilder url = new StringBuilder("https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=")
           .append(enc(playlistId)).append("&maxResults=")
@@ -267,13 +278,41 @@ public class YouTubeSyncService {
     Integer configured = channels.findById(channel)
         .map(YouTubeChannelEntity::getInitialImportCount)
         .orElse(null);
-    if (configured != null) return Math.max(1, Math.min(1000, configured));
+    if (configured != null) return Math.max(0, Math.min(1000, configured));
     try {
-      return Math.max(1, Math.min(1000,
+      return Math.max(0, Math.min(1000,
           Integer.parseInt(settings.getOrDefault("initial_channel_import_count", "20"))));
     } catch (NumberFormatException ignored) {
       return 20;
     }
+  }
+
+  private int initialShortImportCount(YouTubeChannelEntity channel) {
+    return bounded(channel.getShortImportCount());
+  }
+
+  private int initialLiveStreamImportCount(YouTubeChannelEntity channel) {
+    return bounded(channel.getLiveStreamImportCount());
+  }
+
+  private static int bounded(Integer value) {
+    return value == null ? 0 : Math.max(0, Math.min(1000, value));
+  }
+
+  private boolean acceptedInitialCategory(JsonNode video, YouTubeChannelEntity channel,
+                                          int[] categoryCounts, Map<String, String> currentSettings) {
+    int duration = duration(video.path("contentDetails").path("duration").asText());
+    if (isPastLiveStream(video)) {
+      return categoryCounts[2]++ < initialLiveStreamImportCount(channel);
+    }
+    if (isShort(video, duration)) {
+      return categoryCounts[1]++ < initialShortImportCount(channel);
+    }
+    return categoryCounts[0]++ < initialImportCount(channel.getChannelId(), currentSettings);
+  }
+
+  private static boolean isPastLiveStream(JsonNode video) {
+    return !video.path("liveStreamingDetails").path("actualEndTime").asText("").isBlank();
   }
 
   private void markChannelAttempt(String channel, String at) {
@@ -307,6 +346,7 @@ public class YouTubeSyncService {
   private void markSubscriptionsSynced(String channel, String at) {
     List<YouTubeSubscriptionEntity> entities = subscriptions.findByChannelIdAndEnabled(channel, 1);
     entities.forEach(entity -> {
+      if (!youtubeApiKeys.configured(entity.getUserId())) return;
       entity.setLastCheckedAt(at);
       entity.setLastSuccessfulSyncAt(at);
     });
@@ -315,6 +355,7 @@ public class YouTubeSyncService {
 
   private void linkEnabledSubscribers(String channel) throws Exception {
     for (YouTubeSubscriptionEntity subscription : subscriptions.findByChannelIdAndEnabled(channel, 1)) {
+      if (!youtubeApiKeys.configured(subscription.getUserId())) continue;
       linkExistingVideos(channel, subscription.getUserId());
     }
   }

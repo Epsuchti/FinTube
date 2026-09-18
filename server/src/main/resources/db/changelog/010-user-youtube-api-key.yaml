@@ -1,0 +1,9 @@
+databaseChangeLog:
+  - changeSet:
+      id: 010-user-youtube-api-key
+      author: fintube
+      changes:
+        - addColumn:
+            tableName: users
+            columns:
+              - column: {name: youtube_api_key, type: clob}

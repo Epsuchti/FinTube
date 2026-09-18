@@ -2,7 +2,10 @@ package ch.it4user.fintube.integration;
 
 import ch.it4user.fintube.core.SettingsService;
 import ch.it4user.fintube.persistence.repositories.YouTubeSubscriptionRepository;
+import ch.it4user.fintube.service.UserYouTubeApiKeyService;
 import java.time.Instant;
+import java.util.HashSet;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -15,12 +18,14 @@ public class SubscriptionScheduler {
   private final SettingsService settings;
   private final YouTubeSubscriptionRepository subscriptions;
   private final YouTubeSyncService sync;
+  private final UserYouTubeApiKeyService youtubeApiKeys;
 
   SubscriptionScheduler(SettingsService settings, YouTubeSubscriptionRepository subscriptions,
-                        YouTubeSyncService sync) {
+                        YouTubeSyncService sync, UserYouTubeApiKeyService youtubeApiKeys) {
     this.settings = settings;
     this.subscriptions = subscriptions;
     this.sync = sync;
+    this.youtubeApiKeys = youtubeApiKeys;
   }
 
   @Scheduled(fixedDelayString = "PT15M")
@@ -28,11 +33,16 @@ public class SubscriptionScheduler {
     int minutes = syncIntervalMinutes();
     String cutoff = Instant.now().minusSeconds(minutes * 60L).toString();
     try {
-      for (String channel : subscriptions.findDueChannelIds(cutoff)) {
+      Set<String> syncedChannels = new HashSet<>();
+      for (YouTubeSubscriptionRepository.DueSubscriptionView due : subscriptions.findDueSubscriptions(cutoff)) {
+        String channel = due.getChannelId();
+        if (syncedChannels.contains(channel)) continue;
+        if (!youtubeApiKeys.configured(due.getUserId())) continue;
         try {
-          sync.syncChannel(channel);
+          sync.syncChannel(channel, due.getUserId());
+          syncedChannels.add(channel);
         } catch (Exception e) {
-          LOG.error("Scheduled subscription sync failed for channel={}", channel, e);
+          LOG.error("Scheduled subscription sync failed for channel={} userId={}", channel, due.getUserId(), e);
           // A channel failure is isolated; the scheduler must remain alive.
         }
       }

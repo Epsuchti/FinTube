@@ -36,6 +36,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -172,12 +173,42 @@ class OwnershipIsolationTest {
         UserEntity admin = users.findById(userId).orElseThrow();
         admin.setRole("ADMIN");
         users.save(admin);
-        settings.save("youtube_api_key", "should-not-be-returned", true);
+        settings.save("jellyfin_api_key", "should-not-be-returned", true);
         mvc.perform(get("/api/admin/settings").cookie(session)).andExpect(status().isOk())
                 .andExpect(result -> assertThat(result.getResponse().getContentAsString()).contains(SettingsPolicy.MASK).doesNotContain("should-not-be-returned"));
         mvc.perform(patch("/api/admin/settings").cookie(session).contentType(APPLICATION_JSON)
                         .content("{\"unexpected_secret\":\"value\"}"))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void youtubeApiKeysArePerUserEncryptedAndNeverReturned() throws Exception {
+        String username = unique("youtube-key");
+        Cookie session = register(username, "youtube key password long");
+        String key = "AIzaSy-test-user-key";
+
+        mvc.perform(get("/api/me/youtube-api-key").cookie(session))
+                .andExpect(status().isOk())
+                .andExpect(result -> assertThat(result.getResponse().getContentAsString()).contains("\"configured\":false"));
+        mvc.perform(put("/api/me/youtube-api-key")
+                        .cookie(session).contentType(APPLICATION_JSON)
+                        .content("{\"api_key\":\"" + key + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(result -> assertThat(result.getResponse().getContentAsString())
+                        .contains("\"configured\":true").doesNotContain(key));
+
+        UserEntity user = users.findByUsername(username).orElseThrow();
+        assertThat(user.getYoutubeApiKey()).startsWith("enc:v1:").doesNotContain(key);
+    }
+
+    @Test
+    void subscriptionsRequireTheAuthenticatedUsersApiKey() throws Exception {
+        settings.save("youtube_api_key", "legacy-global-key", true);
+        Cookie session = register(unique("youtube-required"), "youtube required password long");
+
+        mvc.perform(post("/api/subscriptions").cookie(session).contentType(APPLICATION_JSON)
+                        .content("{\"channel\":\"UC1234567890123456789012\"}"))
+                .andExpect(status().isPreconditionRequired());
     }
 
     private Cookie register(String username, String password) throws Exception {

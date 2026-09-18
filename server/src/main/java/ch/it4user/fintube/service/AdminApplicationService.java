@@ -26,6 +26,7 @@ import org.springframework.web.server.ResponseStatusException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
@@ -65,7 +66,9 @@ public class AdminApplicationService {
     public Map<String, String> settings(HttpServletRequest request) {
         return database(() -> {
             authorization.requireAdmin(request);
-            return settings.values(true);
+            Map<String, String> result = new LinkedHashMap<>(settings.values(true));
+            result.remove("youtube_api_key");
+            return result;
         });
     }
 

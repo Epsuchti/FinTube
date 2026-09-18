@@ -19,12 +19,58 @@ export class AccountPageComponent implements OnInit {
     readonly saving = signal(false);
     readonly error = signal('');
     readonly notice = signal('');
+    readonly youtubeApiKeyConfigured = signal(false);
     oldPassword = '';
     newPassword = '';
     confirmation = '';
+    youtubeApiKey = '';
 
     ngOnInit(): void {
         this.loadProfile();
+        this.loadYouTubeApiKeyStatus();
+    }
+
+    saveYouTubeApiKey(): void {
+        this.error.set('');
+        this.notice.set('');
+        if (!this.youtubeApiKey.trim()) {
+            this.error.set('Enter a YouTube Data API key.');
+            return;
+        }
+        this.saving.set(true);
+        this.accountApi.updateYouTubeApiKey({
+            updateYouTubeApiKeyRequest: {api_key: this.youtubeApiKey}
+        }).subscribe({
+            next: status => {
+                this.saving.set(false);
+                this.youtubeApiKey = '';
+                this.youtubeApiKeyConfigured.set(status.configured);
+                this.notice.set('YouTube Data API key saved.');
+            },
+            error: (error: unknown) => {
+                this.saving.set(false);
+                this.error.set(this.messageFor(error, 'Could not save your YouTube API key.'));
+            }
+        });
+    }
+
+    removeYouTubeApiKey(): void {
+        this.error.set('');
+        this.notice.set('');
+        this.saving.set(true);
+        this.accountApi.updateYouTubeApiKey({
+            updateYouTubeApiKeyRequest: {api_key: ''}
+        }).subscribe({
+            next: () => {
+                this.saving.set(false);
+                this.youtubeApiKeyConfigured.set(false);
+                this.notice.set('YouTube Data API key removed.');
+            },
+            error: (error: unknown) => {
+                this.saving.set(false);
+                this.error.set(this.messageFor(error, 'Could not remove your YouTube API key.'));
+            }
+        });
     }
 
     changePassword(): void {
@@ -74,6 +120,13 @@ export class AccountPageComponent implements OnInit {
                 this.loading.set(false);
                 this.error.set(this.messageFor(error, 'Could not load your profile.'));
             }
+        });
+    }
+
+    private loadYouTubeApiKeyStatus(): void {
+        this.accountApi.getYouTubeApiKeyStatus().subscribe({
+            next: status => this.youtubeApiKeyConfigured.set(status.configured),
+            error: (error: unknown) => this.error.set(this.messageFor(error, 'Could not load your YouTube API key status.'))
         });
     }
 

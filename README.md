@@ -12,7 +12,7 @@ On macOS with Homebrew, run `brew install yt-dlp ffmpeg`. If the app is started 
 ./server/mvnw -f server/pom.xml spring-boot:run
 ```
 
-The application is at `http://localhost:8080`. When no administrator exists, it presents a setup wizard and prints a one-time token to the server console. FinTube also saves the generated token at `data/setup-admin-token` with owner-only permissions. The token is hashed in H2, is never returned by the API, and is deleted after the first admin is created. Configure the YouTube Data API key, public bridge URL, Jellyfin values, quality and cache policy in the admin screen afterward.
+The application is at `http://localhost:8080`. When no administrator exists, it presents a setup wizard and prints a one-time token to the server console. FinTube also saves the generated token at `data/setup-admin-token` with owner-only permissions. The token is hashed in H2, is never returned by the API, and is deleted after the first admin is created. Configure the public bridge URL, Jellyfin values, quality and cache policy in the admin screen afterward. Each user configures their own YouTube Data API key from the Account screen.
 
 For development, run `./server/mvnw -f server/pom.xml spring-boot:run` and `cd client && npm start` in separate terminals. Angular's dev server rebuilds and reloads the browser; Spring Boot DevTools restarts the backend after compiled classes change. In IntelliJ, enable automatic project builds if you want Java changes to trigger the restart without invoking Maven manually.
 

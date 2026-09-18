@@ -17,15 +17,17 @@ class SettingsPolicyTest {
                 "public_base_url", "https://bridge.example.test",
                 "jellyfin_url", "http://jellyfin:8096",
                 "jellyfin_request_timeout_seconds", "10",
-                "youtube_api_key", "api-key"));
+                "jellyfin_api_key", "api-key"));
 
-        assertThat(SettingsPolicy.isSecret("youtube_api_key")).isTrue();
+        assertThat(SettingsPolicy.isSecret("jellyfin_api_key")).isTrue();
         assertThat(SettingsPolicy.isSecret("stream_quality")).isFalse();
     }
 
     @Test
     void rejectsUnknownKeysInvalidRangesAndEmbeddedCredentials() {
         assertThatThrownBy(() -> SettingsPolicy.validate(Map.of("not_a_setting", "x")))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> SettingsPolicy.validate(Map.of("youtube_api_key", "legacy-key")))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> SettingsPolicy.validate(Map.of("stream_quality", "999")))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -37,6 +39,6 @@ class SettingsPolicyTest {
 
     @Test
     void allowsMaskedSecretsToBeSentBackWithoutOverwritingThem() {
-        SettingsPolicy.validate(Map.of("youtube_api_key", SettingsPolicy.MASK, "jellyfin_api_key", SettingsPolicy.MASK));
+        SettingsPolicy.validate(Map.of("jellyfin_api_key", SettingsPolicy.MASK));
     }
 }

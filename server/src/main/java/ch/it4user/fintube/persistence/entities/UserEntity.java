@@ -22,6 +22,9 @@ public class UserEntity {
     private String createdAt;
     @Column(name = "updated_at", nullable = false)
     private String updatedAt;
+    @Lob
+    @Column(name = "youtube_api_key")
+    private String youtubeApiKey;
 
     protected UserEntity() {
     }
@@ -58,6 +61,14 @@ public class UserEntity {
 
     public String getFilesystemSlug() {
         return filesystemSlug;
+    }
+
+    public String getYoutubeApiKey() {
+        return youtubeApiKey;
+    }
+
+    public void setYoutubeApiKey(String value) {
+        youtubeApiKey = value;
     }
 
     public void setPasswordHash(String value) {

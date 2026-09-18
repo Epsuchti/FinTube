@@ -61,7 +61,7 @@ public class SettingsService {
             if (mask && secret) {
                 result.put(setting.getKey(), SettingsPolicy.MASK);
             } else {
-                result.put(setting.getKey(), secret ? decrypt(setting.getValue()) : setting.getValue());
+                result.put(setting.getKey(), secret ? reveal(setting.getValue()) : setting.getValue());
             }
         }
         return result;
@@ -76,7 +76,7 @@ public class SettingsService {
     public void save(String key, String value, boolean secret) {
         SettingEntity setting = settings.findByKey(key)
                 .orElseGet(() -> new SettingEntity(key, value, secret ? 1 : 0, ApplicationClock.now()));
-        setting.setValue(secret ? encrypt(value) : value);
+        setting.setValue(secret ? protect(value) : value);
         setting.setSecret(secret ? 1 : 0);
         setting.setUpdatedAt(ApplicationClock.now());
         settings.save(setting);
@@ -118,7 +118,7 @@ public class SettingsService {
         return existing;
     }
 
-    private String encrypt(String plain) {
+    public String protect(String plain) {
         if (plain == null) return null;
         try {
             byte[] nonce = new byte[12];
@@ -136,7 +136,7 @@ public class SettingsService {
         }
     }
 
-    private String decrypt(String stored) {
+    public String reveal(String stored) {
         if (stored == null || !stored.startsWith(ENCRYPTED_PREFIX)) return stored;
         try {
             byte[] combined = Base64.getDecoder().decode(stored.substring(ENCRYPTED_PREFIX.length()));
