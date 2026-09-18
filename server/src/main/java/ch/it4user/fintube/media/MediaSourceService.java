@@ -40,6 +40,7 @@ import java.util.regex.Pattern;
  */
 @Service
 public class MediaSourceService {
+  private static final String DEFAULT_PO_TOKEN_PROVIDER_ARGS = "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416";
   private static final Pattern EXPIRE = Pattern.compile("(?:^|[?&])expire=(\\d+)");
   private final SettingsService settingsService;
   private final MediaSourceRepository mediaSourceRepository;
@@ -164,7 +165,8 @@ public class MediaSourceService {
     if (cookieFile != null && !cookieFile.isBlank()) command.addAll(List.of("--cookies", cookieFile));
     String playerClient = settings.get("youtube_player_client");
     String poToken = settings.get("youtube_po_token");
-    String providerArgs = "true".equalsIgnoreCase(settings.getOrDefault("youtube_po_token_provider_enabled", "true")) ? settings.get("youtube_po_token_provider_args") : "";
+    String providerArgs = "true".equalsIgnoreCase(settings.getOrDefault("youtube_po_token_provider_enabled", "true"))
+        ? settings.getOrDefault("youtube_po_token_provider_args", DEFAULT_PO_TOKEN_PROVIDER_ARGS) : "";
     if (playerClient != null && !playerClient.isBlank()) command.addAll(List.of("--extractor-args", "youtube:player_client=" + playerClient));
     if (poToken != null && !poToken.isBlank()) command.addAll(List.of("--extractor-args", "youtube:po_token=" + poToken));
     // Provider plugins are discovered by yt-dlp itself. This option only forwards
