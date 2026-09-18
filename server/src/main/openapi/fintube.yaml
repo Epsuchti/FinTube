@@ -22,6 +22,8 @@ paths:
     post: { tags: [ Library ], operationId: addSubscription, requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AddSubscriptionRequest' } } } }, responses: { '200': { description: Added } } }
   /subscriptions/import-cookies:
     post: { tags: [ Library ], operationId: importSubscriptionsFromCookies, requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ImportCookiesRequest' } } } }, responses: { '200': { description: Imported, content: { application/json: { schema: { $ref: '#/components/schemas/ImportChannelsResult' } } } } } }
+  /subscriptions/refresh-all:
+    post: { tags: [ Library ], operationId: refreshAllSubscriptions, responses: { '200': { description: Refreshed all enabled subscriptions, content: { application/json: { schema: { $ref: '#/components/schemas/RefreshResult' } } } } } }
   /subscriptions/{id}:
     parameters: [ { name: id, in: path, required: true, schema: { type: integer, format: int64 } } ]
     patch: { tags: [ Library ], operationId: updateSubscription, requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ToggleSubscriptionRequest' } } } }, responses: { '200': { description: Updated } } }

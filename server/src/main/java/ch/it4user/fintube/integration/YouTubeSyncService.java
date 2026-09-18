@@ -21,6 +21,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -117,6 +118,7 @@ public class YouTubeSyncService {
     markChannelAttempt(channel, attemptAt);
     try {
       YouTubeChannelEntity channelEntity = channelEntity(channel);
+      ensureChannelMetadata(channelEntity, key);
       String cursor = channelEntity.getLastSyncPublishedAt();
       boolean initial = cursor == null || cursor.isBlank();
       List<JsonNode> playlistItems = discover(channelEntity, key, cursor, currentSettings);
@@ -263,6 +265,37 @@ public class YouTubeSyncService {
   private YouTubeChannelEntity channelEntity(String channel) {
     return channels.findById(channel)
         .orElseThrow(() -> new IllegalArgumentException("unknown YouTube channel " + channel));
+  }
+
+  private void ensureChannelMetadata(YouTubeChannelEntity channelEntity, String key) {
+    boolean missingThumbnail = channelEntity.getThumbnailUrl() == null || channelEntity.getThumbnailUrl().isBlank();
+    boolean missingPlaylist = channelEntity.getUploadsPlaylistId() == null || channelEntity.getUploadsPlaylistId().isBlank();
+    if (!missingThumbnail && !missingPlaylist) return;
+    try {
+      JsonNode item = request("https://www.googleapis.com/youtube/v3/channels?part=snippet,contentDetails&id="
+          + enc(channelEntity.getChannelId()) + "&key=" + enc(key)).path("items").path(0);
+      if (!item.isObject()) return;
+      boolean changed = false;
+      String name = item.path("snippet").path("title").asText("");
+      String thumbnail = thumbnail(item.path("snippet"));
+      String playlist = item.path("contentDetails").path("relatedPlaylists").path("uploads").asText("");
+      if (!name.isBlank() && !name.equals(channelEntity.getName())) {
+        channelEntity.setName(name);
+        changed = true;
+      }
+      if (!thumbnail.isBlank() && !thumbnail.equals(channelEntity.getThumbnailUrl())) {
+        channelEntity.setThumbnailUrl(thumbnail);
+        changed = true;
+      }
+      if (!playlist.isBlank() && !playlist.equals(channelEntity.getUploadsPlaylistId())) {
+        channelEntity.setUploadsPlaylistId(playlist);
+        changed = true;
+      }
+      if (changed) {
+        channelEntity.setUpdatedAt(now());
+        channels.save(channelEntity);
+      }
+    } catch (Exception ignored) { }
   }
 
   private String uploadsPlaylist(String channel, String key) throws Exception {
@@ -414,7 +447,7 @@ public class YouTubeSyncService {
     YouTubeChannelEntity channelEntity = channels.findById(entity.getChannelId()).orElse(null);
     if (userEntity == null || channelEntity == null) return;
     writeLibrary(user, userEntity.getFilesystemSlug(), channelEntity.getName(), entity.getChannelId(),
-        video, entity.getTitle(), entity.getDescription(), entity.getPublishedAt(),
+        channelEntity.getThumbnailUrl(), video, entity.getTitle(), entity.getDescription(), entity.getPublishedAt(),
         entity.getDurationSeconds(), entity.getThumbnailUrl(), entity.getAvailability());
   }
 
@@ -424,17 +457,23 @@ public class YouTubeSyncService {
     if (!id.isBlank()) linkStoredVideo(user, id);
   }
 
-  private void writeLibrary(long user, String slug, String channelName, String channel, String video,
+  private void writeLibrary(long user, String slug, String channelName, String channel, String channelThumbnail,
+                            String video,
                             String title, String description, String published, int duration,
                             String thumbnail, String availability) throws Exception {
     Path root = paths.usersRoot.resolve(slug).toAbsolutePath().normalize();
     if (!root.startsWith(paths.usersRoot.toAbsolutePath().normalize()))
       throw new SecurityException("invalid user filesystem root");
-    Path path = root.resolve(clean(channelName) + " [" + clean(channel) + "]").resolve(video).normalize();
+    Path channelPath = root.resolve(clean(channelName)).normalize();
+    if (!channelPath.startsWith(root) || channelPath.equals(root)) throw new SecurityException("invalid channel library path");
+    Path path = channelPath.resolve(video).normalize();
     if (!path.startsWith(root) || path.equals(root)) throw new SecurityException("invalid library path");
-    Files.createDirectories(path);
     UserVideoId linkId = new UserVideoId(user, video);
     UserVideoEntity link = userVideos.findById(linkId).orElse(null);
+    Path existingPath = link == null ? null : Path.of(link.getLibraryPath()).toAbsolutePath().normalize();
+    migrateLibraryDirectory(existingPath, path, root);
+    Files.createDirectories(path);
+    downloadThumbnail(channelThumbnail, channelPath.resolve("folder.jpg"));
     String token = link == null ? UUID.randomUUID().toString().replace("-", "") : link.getPlaybackToken();
     String base = settings().getOrDefault("public_base_url", "http://localhost:8080");
     Files.writeString(path.resolve("video.strm"), base + "/play/" + video + "?token=" + token + "\n");
@@ -596,5 +635,30 @@ public class YouTubeSyncService {
     try (DirectoryStream<Path> entries = Files.newDirectoryStream(path)) {
       if (!entries.iterator().hasNext()) Files.deleteIfExists(path);
     } catch (Exception ignored) { }
+  }
+
+  private static void migrateLibraryDirectory(Path current, Path target, Path root) throws IOException {
+    if (current == null || current.equals(target) || !Files.exists(current)
+        || !current.startsWith(root) || current.equals(root)
+        || !target.startsWith(root) || target.equals(root) || Files.isSymbolicLink(current)) return;
+    if (!Files.isDirectory(current)) return;
+    Files.createDirectories(target);
+    try (DirectoryStream<Path> entries = Files.newDirectoryStream(current)) {
+      for (Path source : entries) {
+        Path destination = target.resolve(source.getFileName()).normalize();
+        if (!destination.startsWith(target)) continue;
+        if (Files.exists(destination)) {
+          if (Files.isDirectory(source) && Files.isDirectory(destination)) {
+            migrateLibraryDirectory(source, destination, target);
+          } else {
+            Files.deleteIfExists(source);
+          }
+        } else {
+          Files.move(source, destination);
+        }
+      }
+    }
+    Files.deleteIfExists(current);
+    deleteIfEmpty(current.getParent(), root);
   }
 }

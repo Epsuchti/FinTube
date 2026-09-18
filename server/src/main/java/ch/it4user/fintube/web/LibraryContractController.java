@@ -62,6 +62,11 @@ public class LibraryContractController implements LibraryApi {
     }
 
     @Override
+    public ResponseEntity<RefreshResult> refreshAllSubscriptions() {
+        return ResponseEntity.ok(library.refreshAllSubscriptions(requestContext));
+    }
+
+    @Override
     public ResponseEntity<Void> removeSubscription(Long id) {
         library.removeSubscription(requestContext, id);
         return ResponseEntity.ok().build();

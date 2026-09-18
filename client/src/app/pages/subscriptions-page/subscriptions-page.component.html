@@ -5,7 +5,11 @@
     <p class="muted">Only your subscriptions and their videos appear in this workspace.</p>
   </div>
   <div class="heading-actions">
+    <div class="channel-search">
+      <form class="inline-form channel-search-form" (ngSubmit)="searchSubscriptions()"><input name="searchQuery" [(ngModel)]="searchQuery" placeholder="Search subscriptions"><button type="submit" [disabled]="loading()">Search</button></form>
+    </div>
     <button type="button" (click)="toggleCookieImport()" [attr.aria-expanded]="cookieImportOpen()">Import from YouTube</button>
+    <button type="button" (click)="refreshAllSubscriptions()" [disabled]="loading() || !hasEnabledSubscriptions()">Sync all</button>
     <span class="count-pill">{{ subscriptions().length }} channels</span>
   </div>
 </div>
@@ -48,7 +52,7 @@
 </section>
 
 <div class="subscription-grid">
-  @for (subscription of subscriptions(); track subscription.id) {
+  @for (subscription of filteredSubscriptions(); track subscription.id) {
     <article class="subscription-card" [class.subscription-paused]="!enabled(subscription)">
       <div class="subscription-card-top">
         <div class="channel-avatar">{{ subscription.name.charAt(0).toUpperCase() }}</div>
@@ -84,6 +88,6 @@
       </div>
     </article>
   } @empty {
-    <div class="empty-state"><div class="empty-icon">＋</div><h3>No subscriptions yet</h3><p class="muted">Add a channel above or import your YouTube subscriptions to populate your private Jellyfin library.</p></div>
+    <div class="empty-state"><div class="empty-icon">＋</div><h3>{{ appliedSearch() ? 'No matching channels' : 'No subscriptions yet' }}</h3><p class="muted">{{ appliedSearch() ? 'Try a different search.' : 'Add a channel above or import your YouTube subscriptions to populate your private Jellyfin library.' }}</p></div>
   }
 </div>

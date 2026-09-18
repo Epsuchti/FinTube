@@ -62,6 +62,7 @@ public class LibraryApplicationService {
     private static final int MAX_SUBSCRIPTION_FEED_ITEMS = 5_000;
     private static final Duration COOKIE_IMPORT_TIMEOUT = Duration.ofSeconds(180);
     private static final Pattern YOUTUBE_CHANNEL_ID = Pattern.compile("(?<![A-Za-z0-9_-])(UC[A-Za-z0-9_-]{20,})(?![A-Za-z0-9_-])");
+    private static final Pattern YOUTUBE_HANDLE = Pattern.compile("[A-Za-z0-9._-]{3,30}");
     private final SettingsService settings;
     private final ApplicationPaths paths;
     private final YouTubeChannelRepository channels;
@@ -239,6 +240,27 @@ public class LibraryApplicationService {
         });
     }
 
+    public RefreshResult refreshAllSubscriptions(HttpServletRequest request) {
+        return database(() -> {
+            AuthService.Principal principal = authorization.requireUser(request);
+            requireYouTubeApiKey(principal.id());
+            int discovered = 0;
+            for (YouTubeSubscriptionEntity subscription : subscriptions.findByUserIdAndEnabled(principal.id(), 1)) {
+                try {
+                    discovered += sync.sync(subscription.getChannelId(), principal.id());
+                } catch (Exception e) {
+                    LOG.error("Subscription refresh failed for subscriptionId={} channelId={}",
+                            subscription.getId(), subscription.getChannelId(), e);
+                    throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                            "refresh all failed for channel " + subscription.getChannelId(), e);
+                }
+            }
+            audit.event("SUBSCRIPTIONS_REFRESH_ALL_COMPLETED",
+                    Map.of("userId", principal.id(), "discovered", discovered));
+            return new RefreshResult().discovered(discovered);
+        });
+    }
+
     public List<Video> videos(HttpServletRequest request) {
         return database(() -> {
             AuthService.Principal principal = authorization.requireUser(request);
@@ -305,6 +327,9 @@ public class LibraryApplicationService {
                 .orElseGet(() -> new YouTubeChannelEntity(channel.id(), channel.name(), channel.url(), ApplicationClock.now()));
         canonical.setName(channel.name());
         canonical.setUrl(channel.url());
+        if (channel.thumbnailUrl() != null && !channel.thumbnailUrl().isBlank()) {
+            canonical.setThumbnailUrl(channel.thumbnailUrl());
+        }
         canonical.setUpdatedAt(ApplicationClock.now());
         if (canonical.getInitialImportCount() == null) canonical.setInitialImportCount(initialImportCount());
         if (canonical.getShortImportCount() == null) canonical.setShortImportCount(initialShortImportCount());
@@ -377,7 +402,7 @@ public class LibraryApplicationService {
             if (name.isBlank()) name = entry.path("uploader").asText("");
             if (name.isBlank()) name = channelId;
             result.add(new Channel(channelId, name,
-                    "https://www.youtube.com/channel/" + channelId));
+                    "https://www.youtube.com/channel/" + channelId, ""));
         }
         return result;
     }
@@ -416,15 +441,18 @@ public class LibraryApplicationService {
 
     private Channel resolve(long userId, String raw) throws Exception {
         String id = channelId(raw);
+        String handle = channelHandle(raw);
         String key = requireYouTubeApiKey(userId);
         String endpoint = !id.isBlank()
                 ? "https://www.googleapis.com/youtube/v3/channels?part=snippet&id=" + id + "&key=" + URLEncoder.encode(key, StandardCharsets.UTF_8)
+                : !handle.isBlank()
+                ? "https://www.googleapis.com/youtube/v3/channels?part=snippet&forHandle=" + URLEncoder.encode(handle, StandardCharsets.UTF_8) + "&key=" + URLEncoder.encode(key, StandardCharsets.UTF_8)
                 : "https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&maxResults=1&q=" + URLEncoder.encode(raw, StandardCharsets.UTF_8) + "&key=" + URLEncoder.encode(key, StandardCharsets.UTF_8);
         HttpResponse<String> response = http.send(
                 HttpRequest.newBuilder(URI.create(endpoint)).GET().build(),
                 HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            if (response.statusCode() == 404 && !id.isBlank()) {
+            if (response.statusCode() == 404 && (!id.isBlank() || !handle.isBlank())) {
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "channel not found");
             }
             LOG.warn("YouTube channel lookup failed with HTTP status {}", response.statusCode());
@@ -434,8 +462,9 @@ public class LibraryApplicationService {
         JsonNode root = objectMapper.readTree(response.body());
         if (!root.path("items").isArray() || root.path("items").isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "channel not found");
         JsonNode item = root.path("items").get(0);
-        String channelId = !id.isBlank() ? item.path("id").asText() : item.path("id").path("channelId").asText();
-        return new Channel(channelId, item.path("snippet").path("title").asText(), "https://www.youtube.com/channel/" + channelId);
+        String channelId = !id.isBlank() || !handle.isBlank() ? item.path("id").asText() : item.path("id").path("channelId").asText();
+        return new Channel(channelId, item.path("snippet").path("title").asText(),
+                "https://www.youtube.com/channel/" + channelId, thumbnail(item.path("snippet")));
     }
 
     private String requireYouTubeApiKey(long userId) {
@@ -450,6 +479,36 @@ public class LibraryApplicationService {
     private static String channelId(String value) {
         Matcher matcher = YOUTUBE_CHANNEL_ID.matcher(value == null ? "" : value);
         return matcher.find() ? matcher.group(1) : "";
+    }
+
+    private static String channelHandle(String value) {
+        String raw = value == null ? "" : value.trim();
+        if (raw.startsWith("@")) return validHandle(raw.substring(1)) ? raw : "";
+        try {
+            URI uri = URI.create(raw.contains("://") ? raw : "https://" + raw);
+            String host = uri.getHost();
+            if (host == null || !(host.equalsIgnoreCase("youtube.com") || host.equalsIgnoreCase("www.youtube.com"))) return "";
+            String path = uri.getPath();
+            if (path == null || !path.startsWith("/@")) return "";
+            String handle = path.substring(2);
+            int slash = handle.indexOf('/');
+            if (slash >= 0) handle = handle.substring(0, slash);
+            return validHandle(handle) ? "@" + handle : "";
+        } catch (IllegalArgumentException ignored) {
+            return "";
+        }
+    }
+
+    private static boolean validHandle(String value) {
+        return YOUTUBE_HANDLE.matcher(value).matches();
+    }
+
+    private static String thumbnail(JsonNode snippet) {
+        for (String key : List.of("maxres", "standard", "high", "medium", "default")) {
+            String value = snippet.path("thumbnails").path(key).path("url").asText();
+            if (!value.isBlank()) return value;
+        }
+        return "";
     }
 
     private <T> T database(Callable<T> operation) {
@@ -470,5 +529,5 @@ public class LibraryApplicationService {
 
     private static Boolean booleanValue(Object item) { return item instanceof Boolean b ? b : item instanceof Number n ? n.intValue() == 1 : item == null ? null : Boolean.parseBoolean(item.toString()); }
 
-    private record Channel(String id, String name, String url) {}
+    private record Channel(String id, String name, String url, String thumbnailUrl) {}
 }

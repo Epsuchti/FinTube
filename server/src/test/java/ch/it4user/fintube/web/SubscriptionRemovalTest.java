@@ -121,7 +121,7 @@ class SubscriptionRemovalTest {
     }
 
     private Path libraryPath(String username, String videoId) throws Exception {
-        return paths.usersRoot.resolve(slug(username)).resolve("Shared Channel [UCshared]").resolve(videoId);
+        return paths.usersRoot.resolve(slug(username)).resolve("Shared Channel").resolve(videoId);
     }
 
     private void seedChannel(String id) throws Exception {

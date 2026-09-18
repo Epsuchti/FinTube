@@ -1,4 +1,4 @@
-import {ChangeDetectionStrategy, Component, ElementRef, EventEmitter, OnInit, Output, ViewChild, inject, signal} from '@angular/core';
+import {ChangeDetectionStrategy, Component, ElementRef, EventEmitter, OnInit, Output, ViewChild, computed, inject, signal} from '@angular/core';
 import {CommonModule, DatePipe} from '@angular/common';
 import {HttpErrorResponse} from '@angular/common/http';
 import {FormsModule} from '@angular/forms';
@@ -20,6 +20,13 @@ export class SubscriptionsPageComponent implements OnInit {
     private readonly libraryApi = inject(LibraryService);
 
     readonly subscriptions = signal<Subscription[]>([]);
+    readonly filteredSubscriptions = computed(() => {
+        const query = this.appliedSearch();
+        if (!query) return this.subscriptions();
+        return this.subscriptions().filter(subscription =>
+            [subscription.name, subscription.channel_id, subscription.url]
+                .some(value => (value ?? '').toLowerCase().includes(query)));
+    });
     readonly loading = signal(false);
     readonly error = signal('');
     readonly notice = signal('');
@@ -33,7 +40,9 @@ export class SubscriptionsPageComponent implements OnInit {
     @Output() videoCountChange = new EventEmitter<number>();
     @ViewChild('cookieFile') private cookieFile?: ElementRef<HTMLInputElement>;
     private cookieContents = '';
+    readonly appliedSearch = signal('');
     channel = '';
+    searchQuery = '';
 
     ngOnInit(): void {
         this.loadSubscriptions();
@@ -58,6 +67,10 @@ export class SubscriptionsPageComponent implements OnInit {
                 this.error.set(this.messageFor(error, 'Could not add subscription.'));
             }
         });
+    }
+
+    searchSubscriptions(): void {
+        this.appliedSearch.set(this.searchQuery.trim().toLowerCase());
     }
 
     toggleCookieImport(): void {
@@ -192,6 +205,21 @@ export class SubscriptionsPageComponent implements OnInit {
         });
     }
 
+    refreshAllSubscriptions(): void {
+        this.loading.set(true);
+        this.libraryApi.refreshAllSubscriptions().subscribe({
+            next: result => {
+                this.notice.set(`Sync complete${result.discovered === undefined ? '.' : `: ${result.discovered} new video(s) discovered.`}`);
+                this.loadSubscriptions();
+                this.loadVideoCount();
+            },
+            error: (error: unknown) => {
+                this.loading.set(false);
+                this.error.set(this.messageFor(error, 'Could not sync all subscriptions.'));
+            }
+        });
+    }
+
     reimportSubscription(subscription: Subscription): void {
         const values = this.subscriptionSettings(subscription);
         if (!values) return;
@@ -237,6 +265,10 @@ export class SubscriptionsPageComponent implements OnInit {
 
     enabled(item: Subscription): boolean {
         return item.enabled === true || (item.enabled as unknown) === 1;
+    }
+
+    hasEnabledSubscriptions(): boolean {
+        return this.subscriptions().some(subscription => this.enabled(subscription));
     }
 
     importCount(subscription: Subscription): number {

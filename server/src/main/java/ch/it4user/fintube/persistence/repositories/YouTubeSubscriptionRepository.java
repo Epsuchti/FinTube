@@ -32,6 +32,7 @@ public interface YouTubeSubscriptionRepository extends JpaRepository<YouTubeSubs
   Optional<YouTubeSubscriptionEntity> findByIdAndUserId(Long id, Long userId);
   Optional<YouTubeSubscriptionEntity> findByUserIdAndChannelId(Long userId, String channelId);
   Optional<YouTubeSubscriptionEntity> findByUserIdAndChannelIdAndEnabled(Long userId, String channelId, int enabled);
+  List<YouTubeSubscriptionEntity> findByUserIdAndEnabled(Long userId, int enabled);
   @Query("select s.channelId as channelId, s.userId as userId from YouTubeSubscriptionEntity s, YouTubeChannelEntity c "
       + "where s.channelId = c.channelId and s.enabled = 1 and (c.lastSyncAt is null or c.lastSyncAt < :cutoff) "
       + "order by s.channelId, s.userId")
