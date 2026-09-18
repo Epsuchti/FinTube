@@ -48,6 +48,7 @@ Persistent state defaults to `./data` and can be relocated with `FINTUBE_DATA_DI
 
 - Accounts use BCrypt hashes and opaque HTTP-only server-side session cookies. Subscription/library queries are always filtered by authenticated user ID; admin endpoints require `ADMIN`.
 - Canonical `youtube_channels` and `videos` rows are shared. User subscriptions and libraries are relationships, so media is not duplicated per user.
+- Scheduled channel syncs read each channel's cached uploads playlist instead of using the rate-limited YouTube search endpoint; name-based channel lookup still uses search when a subscription is added by name.
 - `.strm` files contain a stable backend capability URL, never YouTube. The bridge produces a finite HLS VOD manifest and routes every segment through its cache.
 - `FragmentManager` uses deterministic fragment paths, atomic writes and single-flight fetches per `(video, format, fragment)`. A seek asks only for the target fragment; expired URLs are refreshed through yt-dlp.
 - `stream_quality` selects one shared direct-play source representation. Jellyfin's bitrate menu is not the source-quality selector.

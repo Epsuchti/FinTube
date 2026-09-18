@@ -18,6 +18,7 @@ public class YouTubeChannelEntity {
   @Column(name = "last_sync_at", length = 64) private String lastSyncAt;
   @Column(name = "last_successful_sync_at", length = 64) private String lastSuccessfulSyncAt;
   @Column(name = "last_sync_published_at", length = 64) private String lastSyncPublishedAt;
+  @Column(name = "uploads_playlist_id", length = 255) private String uploadsPlaylistId;
   @Column(name = "initial_import_count") private Integer initialImportCount;
   @Column(name = "download_count") private Integer downloadCount;
   @Lob @Column(name = "sync_error") private String syncError;
@@ -33,6 +34,7 @@ public class YouTubeChannelEntity {
   public String getLastSyncAt() { return lastSyncAt; }
   public String getLastSuccessfulSyncAt() { return lastSuccessfulSyncAt; }
   public String getLastSyncPublishedAt() { return lastSyncPublishedAt; }
+  public String getUploadsPlaylistId() { return uploadsPlaylistId; }
   public Integer getInitialImportCount() { return initialImportCount; }
   public Integer getDownloadCount() { return downloadCount; }
   public String getSyncError() { return syncError; }
@@ -43,6 +45,7 @@ public class YouTubeChannelEntity {
   public void setLastSyncAt(String value) { lastSyncAt = value; }
   public void setLastSuccessfulSyncAt(String value) { lastSuccessfulSyncAt = value; }
   public void setLastSyncPublishedAt(String value) { lastSyncPublishedAt = value; }
+  public void setUploadsPlaylistId(String value) { uploadsPlaylistId = value; }
   public void setInitialImportCount(Integer value) { initialImportCount = value; }
   public void setDownloadCount(Integer value) { downloadCount = value; }
   public void setSyncError(String value) { syncError = value; }

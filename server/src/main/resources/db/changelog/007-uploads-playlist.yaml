@@ -1,0 +1,9 @@
+databaseChangeLog:
+  - changeSet:
+      id: 007-uploads-playlist
+      author: fintube
+      changes:
+        - addColumn:
+            tableName: youtube_channels
+            columns:
+              - column: {name: uploads_playlist_id, type: varchar(255)}

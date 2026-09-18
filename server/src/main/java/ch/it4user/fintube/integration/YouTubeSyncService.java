@@ -113,17 +113,18 @@ public class YouTubeSyncService {
     String attemptAt = now();
     markChannelAttempt(channel, attemptAt);
     try {
-      String cursor = channelCursor(channel);
-      List<JsonNode> searchItems = discover(channel, key, cursor, currentSettings);
+      YouTubeChannelEntity channelEntity = channelEntity(channel);
+      String cursor = channelEntity.getLastSyncPublishedAt();
+      List<JsonNode> playlistItems = discover(channelEntity, key, cursor, currentSettings);
       List<String> ids = new ArrayList<>();
       String newestPublished = cursor;
-      for (JsonNode item : searchItems) {
-        String id = item.path("id").path("videoId").asText();
+      for (JsonNode item : playlistItems) {
+        String id = playlistVideoId(item);
         if (id.isBlank() || ids.contains(id)) continue;
         ids.add(id);
-        newestPublished = maxPublished(newestPublished, item.path("snippet").path("publishedAt").asText());
+        newestPublished = maxPublished(newestPublished, playlistPublishedAt(item));
       }
-      // Incremental search intentionally does not return older uploads. Probe
+      // Incremental playlist reads stop at the persisted cursor. Probe
       // a bounded set of stale canonical rows as well, so a deleted/private
       // video that disappeared from the API is eventually marked unavailable
       // without re-importing an entire channel history on every run.
@@ -146,7 +147,7 @@ public class YouTubeSyncService {
         }
       }
 
-      // A result can disappear between search.list and videos.list because it
+      // A result can disappear between playlistItems.list and videos.list because it
       // was deleted, made private, or rejected. Keep its metadata row but
       // explicitly mark it unavailable instead of presenting it as playable.
       markMissingAsUnavailable(channel, ids, returned);
@@ -212,33 +213,54 @@ public class YouTubeSyncService {
     return true;
   }
 
-  private List<JsonNode> discover(String channel, String key, String cursor,
+  private List<JsonNode> discover(YouTubeChannelEntity channelEntity, String key, String cursor,
                                   Map<String, String> settings) throws Exception {
     boolean initial = cursor == null || cursor.isBlank();
-    int initialLimit = initialImportCount(channel, settings);
+    int initialLimit = initialImportCount(channelEntity.getChannelId(), settings);
+    String playlistId = channelEntity.getUploadsPlaylistId();
+    if (playlistId == null || playlistId.isBlank()) {
+      playlistId = uploadsPlaylist(channelEntity.getChannelId(), key);
+      channelEntity.setUploadsPlaylistId(playlistId);
+      channelEntity.setUpdatedAt(now());
+      channels.save(channelEntity);
+    }
     List<JsonNode> items = new ArrayList<>();
     String page = null;
     int pages = 0;
     do {
-      StringBuilder url = new StringBuilder("https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=")
-          .append(enc(channel)).append("&type=video&order=date&maxResults=")
-          .append(initial ? Math.min(50, initialLimit - items.size()) : 50)
+      int remaining = initial ? Math.max(1, initialLimit - items.size()) : 50;
+      StringBuilder url = new StringBuilder("https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=")
+          .append(enc(playlistId)).append("&maxResults=")
+          .append(Math.min(50, remaining))
           .append("&key=").append(enc(key));
-      if (!initial) url.append("&publishedAfter=").append(enc(afterCursor(cursor)));
       if (page != null && !page.isBlank()) url.append("&pageToken=").append(enc(page));
       JsonNode root = request(url.toString());
-      root.path("items").forEach(items::add);
+      boolean reachedCursor = false;
+      for (JsonNode item : root.path("items")) {
+        String published = playlistPublishedAt(item);
+        if (initial || newerOrEqual(published, cursor)) items.add(item);
+        if (!initial && olderThan(published, cursor)) reachedCursor = true;
+      }
       page = root.path("nextPageToken").asText("");
       pages++;
+      if (!initial && reachedCursor) break;
     } while (page != null && !page.isBlank() && pages < MAX_INCREMENTAL_PAGES
         && (!initial || items.size() < initialLimit));
     return items;
   }
 
-  private String channelCursor(String channel) {
-    YouTubeChannelEntity entity = channels.findById(channel)
+  private YouTubeChannelEntity channelEntity(String channel) {
+    return channels.findById(channel)
         .orElseThrow(() -> new IllegalArgumentException("unknown YouTube channel " + channel));
-    return entity.getLastSyncPublishedAt();
+  }
+
+  private String uploadsPlaylist(String channel, String key) throws Exception {
+    JsonNode root = request("https://www.googleapis.com/youtube/v3/channels?part=contentDetails&id="
+        + enc(channel) + "&key=" + enc(key));
+    String playlist = root.path("items").path(0).path("contentDetails")
+        .path("relatedPlaylists").path("uploads").asText("");
+    if (playlist.isBlank()) throw new IllegalStateException("YouTube uploads playlist not found for channel " + channel);
+    return playlist;
   }
 
   private int initialImportCount(String channel, Map<String, String> settings) {
@@ -411,8 +433,16 @@ public class YouTubeSyncService {
   private JsonNode request(String url) throws Exception {
     HttpResponse<String> response = http.send(HttpRequest.newBuilder(URI.create(url)).GET().build(),
         HttpResponse.BodyHandlers.ofString());
-    if (response.statusCode() / 100 != 2)
-      throw new IllegalStateException("YouTube Data API status " + response.statusCode());
+    if (response.statusCode() / 100 != 2) {
+      String detail = "";
+      try {
+        JsonNode error = json.readTree(response.body()).path("error");
+        String reason = error.path("errors").path(0).path("reason").asText("");
+        String message = error.path("message").asText("");
+        if (!reason.isBlank()) detail = ": " + reason + (message.isBlank() ? "" : " (" + message + ")");
+      } catch (Exception ignored) { }
+      throw new IllegalStateException("YouTube Data API status " + response.statusCode() + detail);
+    }
     return json.readTree(response.body());
   }
 
@@ -447,6 +477,28 @@ public class YouTubeSyncService {
 
   static String enc(String value) { return URLEncoder.encode(value, StandardCharsets.UTF_8); }
 
+  private static String playlistVideoId(JsonNode item) {
+    String id = item.path("contentDetails").path("videoId").asText("");
+    return id.isBlank() ? item.path("snippet").path("resourceId").path("videoId").asText("") : id;
+  }
+
+  private static String playlistPublishedAt(JsonNode item) {
+    String published = item.path("contentDetails").path("videoPublishedAt").asText("");
+    return published.isBlank() ? item.path("snippet").path("publishedAt").asText("") : published;
+  }
+
+  private static boolean newerOrEqual(String candidate, String cursor) {
+    if (cursor == null || cursor.isBlank() || candidate == null || candidate.isBlank()) return true;
+    try { return !Instant.parse(candidate).isBefore(Instant.parse(cursor)); }
+    catch (DateTimeParseException e) { return candidate.compareTo(cursor) >= 0; }
+  }
+
+  private static boolean olderThan(String candidate, String cursor) {
+    if (cursor == null || cursor.isBlank() || candidate == null || candidate.isBlank()) return false;
+    try { return Instant.parse(candidate).isBefore(Instant.parse(cursor)); }
+    catch (DateTimeParseException e) { return candidate.compareTo(cursor) < 0; }
+  }
+
   static String thumbnail(JsonNode snippet) {
     for (String key : List.of("maxres", "standard", "high", "medium", "default")) {
       String value = snippet.path("thumbnails").path(key).path("url").asText();
@@ -462,11 +514,6 @@ public class YouTubeSyncService {
   }
 
   private static int number(String value) { return value == null ? 0 : Integer.parseInt(value); }
-
-  private static String afterCursor(String cursor) {
-    try { return Instant.parse(cursor).minusSeconds(1).toString(); }
-    catch (DateTimeParseException e) { return cursor; }
-  }
 
   private static String maxPublished(String current, String candidate) {
     if (candidate == null || candidate.isBlank()) return current;
