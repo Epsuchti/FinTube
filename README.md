@@ -16,6 +16,30 @@ The application is at `http://localhost:8080`. When no administrator exists, it 
 
 For development, run `./server/mvnw -f server/pom.xml spring-boot:run` and `cd client && npm start` in separate terminals. Angular's dev server rebuilds and reloads the browser; Spring Boot DevTools restarts the backend after compiled classes change. In IntelliJ, enable automatic project builds if you want Java changes to trigger the restart without invoking Maven manually.
 
+### IntelliJ with the PO token provider
+
+For fast local iteration, run only the PO token provider in Docker and run FinTube from IntelliJ. This mirrors the production provider endpoint without rebuilding the FinTube image after every Java change:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d
+./server/deploy/setup-local-ytdlp.sh
+```
+
+The provider is bound only to `127.0.0.1:4416`. In IntelliJ, run the Spring Boot application with the `local` profile (for example, add `-Dspring.profiles.active=local` to VM options). Set `yt_dlp_path` to the path printed by the bootstrap script and set `ffmpeg_path` to your local ffmpeg binary (for example `/opt/homebrew/bin/ffmpeg`). Keep **PO token provider enabled** in the admin UI; its address is selected automatically by the active deployment. Start the Angular app with `cd client && npm start`. Stop the provider with `docker compose -f docker-compose.dev.yml down`.
+
+The same development Compose file also starts Jellyfin at `http://127.0.0.1:8096` and mounts `server/data/users` read-only at `/media/users`. For local Jellyfin playback, set FinTube's `public_base_url` to `http://host.docker.internal:8080`, create a Jellyfin library for the matching `/media/users/<user>` directory, and set FinTube's `jellyfin_url` to `http://127.0.0.1:8096` after completing the Jellyfin setup wizard.
+
+Verify the host setup before debugging playback:
+
+```bash
+./server/.dev/yt-dlp/bin/yt-dlp -v --no-playlist --simulate --print id \
+  --extractor-args 'youtube:player_client=default,mweb' \
+  --extractor-args 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416' \
+  'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+```
+
+The debug output must show `bgutil:http` and successful GVS PO-token retrieval.
+
 Persistent state defaults to `./data` and can be relocated with `FINTUBE_DATA_DIR`. It contains a file-backed H2 database (`fintube-h2.mv.db`), `users/<safe-user-slug>/` Jellyfin trees and the global `cache/` tree. Liquibase applies the versioned schema changelogs automatically at startup. Map each individual user directory as a separate Jellyfin library; do not map the parent `users` directory to every Jellyfin account.
 
 `initial_channel_import_count` controls metadata/history import for a newly added channel (default `20`). `newest_videos_to_download` controls optional low-priority media prefetch of each channel's newest videos (default `0`, disabled). Prefetch jobs fill the global shared cache once; they never download separately for each user.
@@ -38,7 +62,7 @@ The admin settings `jellyfin_url` and `jellyfin_api_key` enable the REST integra
 
 Both are optional administrator settings. `cookie_file` passes an exported Netscape cookie file to yt-dlp; it is encrypted at rest and never returned by the API. `youtube_po_token` accepts yt-dlp's `CLIENT.CONTEXT+TOKEN` value (for example `mweb.gvs+…`) and `youtube_player_client` selects the matching client.
 
-The Compose deployment enables `youtube_po_token_provider_enabled` by default and installs the BgUtils yt-dlp plugin. Its default `youtube_po_token_provider_args` points to the internal `pot-provider` service. The provider has no host port and must stay that way: it is unauthenticated. Bare-metal deployments can install `bgutil-ytdlp-pot-provider` beside yt-dlp and set its documented provider endpoint, or set `youtube_po_token_provider_enabled=false`; FinTube retries a probe without the provider if it is unavailable. Provider arguments and manual tokens are encrypted and never passed through a shell. See the [yt-dlp PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide) and the [BgUtils provider instructions](https://github.com/Brainicism/bgutil-ytdlp-pot-provider).
+The Compose deployment enables the BgUtils yt-dlp plugin and supplies its internal `pot-provider` address through `FINTUBE_YOUTUBE_PO_TOKEN_PROVIDER_URL`. The provider has no host port and must stay that way: it is unauthenticated. The local profile supplies `http://127.0.0.1:4416` instead. A manual PO token is optional and normally left blank. Set `youtube_po_token_provider_enabled=false` to run without the provider; FinTube retries a probe without it if it is unavailable. See the [yt-dlp PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide) and the [BgUtils provider instructions](https://github.com/Brainicism/bgutil-ytdlp-pot-provider).
 
 ## Verification
 

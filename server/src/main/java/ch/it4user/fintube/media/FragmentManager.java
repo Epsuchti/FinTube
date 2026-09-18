@@ -283,8 +283,8 @@ public class FragmentManager {
     String ffmpeg = setting("ffmpeg_path", "ffmpeg");
     Process process;
     try {
-      process = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-i", video.toString(),
-          "-i", audio.toString(), "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-f", "mpegts", "-y", output.toString())
+      process = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-copyts", "-i", video.toString(),
+          "-i", audio.toString(), "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-f", "mpegts", "-mpegts_copyts", "1", "-y", output.toString())
           .redirectErrorStream(true).start();
     } catch (IOException e) {
       throw new IOException("ffmpeg executable is unavailable: " + ffmpeg

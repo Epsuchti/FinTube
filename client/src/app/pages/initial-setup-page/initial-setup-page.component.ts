@@ -28,8 +28,8 @@ export class InitialSetupPageComponent {
             this.error.set('Passwords do not match.');
             return;
         }
-        if (this.password.length < 12 || !this.token.trim()) {
-            this.error.set('A setup token and a password of at least 12 characters are required.');
+        if (this.password.length < 6 || !this.token.trim()) {
+            this.error.set('A setup token and a password of at least 6 characters are required.');
             return;
         }
         this.loading.set(true);

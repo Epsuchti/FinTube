@@ -72,7 +72,7 @@ public class Bootstrap {
         if (!required()) throw new IllegalStateException("an administrator already exists");
         String hash = tokenHash();
         if (hash == null || !auth.matches(token, hash)) throw new SecurityException("invalid setup token");
-        if (!username.matches("[A-Za-z0-9_.-]{3,48}") || password.length() < 12) {
+        if (!username.matches("[A-Za-z0-9_.-]{3,48}") || password.length() < 6) {
             throw new IllegalArgumentException("username or password does not meet policy");
         }
 

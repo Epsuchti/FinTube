@@ -36,8 +36,8 @@ public class AccountApplicationService {
     @Transactional
     public void changePassword(HttpServletRequest request, ChangePasswordRequest password) {
         AuthService.Principal principal = authorization.requireUser(request);
-        if (password.getNewPassword() == null || password.getNewPassword().length() < 12) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "password must be at least 12 characters");
+        if (password.getNewPassword() == null || password.getNewPassword().length() < 6) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "password must be at least 6 characters");
         }
         UserEntity user = users.findById(principal.id()).orElse(null);
         if (user == null || !auth.matches(password.getOldPassword(), user.getPasswordHash())) {

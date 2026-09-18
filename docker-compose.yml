@@ -11,6 +11,7 @@ services:
       # Optional. If absent, the service writes a one-time token to
       # /data/setup-admin-token until the first administrator is created.
       FINTUBE_SETUP_ADMIN_TOKEN: ${FINTUBE_SETUP_ADMIN_TOKEN:-}
+      FINTUBE_YOUTUBE_PO_TOKEN_PROVIDER_URL: http://pot-provider:4416
     volumes:
       - fintube-data:/data
     depends_on:

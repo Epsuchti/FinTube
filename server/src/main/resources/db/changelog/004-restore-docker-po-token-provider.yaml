@@ -1,0 +1,12 @@
+databaseChangeLog:
+  - changeSet:
+      id: 004-restore-docker-po-token-provider
+      author: fintube
+      changes:
+        - update:
+            tableName: settings
+            columns:
+              - column:
+                  name: value
+                  value: "youtubepot-bgutilhttp:base_url=http://pot-provider:4416"
+            where: "key = 'youtube_po_token_provider_args' AND value = 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416'"

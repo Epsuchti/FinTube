@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-ghcr.io/YOUR_GITHUB_USERNAME/fintube-server}"
+IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-ghcr.io/epsuchti/fintube-server}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 LATEST_TAG="${LATEST_TAG:-latest}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

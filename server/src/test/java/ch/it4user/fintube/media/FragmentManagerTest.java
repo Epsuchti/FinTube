@@ -158,7 +158,7 @@ class FragmentManagerTest {
         ]}"
         """);
     MediaSourceService.Source selected = service.select(root);
-    assertEquals("136+140", selected.format());
+    assertEquals("136+140-tsv2", selected.format());
     assertEquals("h264", selected.videoCodec());
     assertEquals("aac", selected.audioCodec());
     assertEquals(2, selected.fragments().size());
@@ -178,7 +178,7 @@ class FragmentManagerTest {
         """.formatted(base, base));
 
     MediaSourceService.Source selected = service.select(root);
-    assertEquals("311+234", selected.format());
+    assertEquals("311+234-tsv2", selected.format());
     assertEquals(2, selected.fragments().size());
     assertEquals("http://127.0.0.1:" + server.getAddress().getPort() + "/audio/1.ts",
         selected.fragments().get(1).audioUrl().toString());

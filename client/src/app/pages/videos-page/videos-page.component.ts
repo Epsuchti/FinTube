@@ -1,6 +1,6 @@
 import {ChangeDetectionStrategy, Component, ElementRef, EventEmitter, OnDestroy, OnInit, Output, ViewChild, inject, signal} from '@angular/core';
 import {CommonModule, DatePipe} from '@angular/common';
-import {HttpErrorResponse} from '@angular/common/http';
+import {HttpClient, HttpErrorResponse} from '@angular/common/http';
 import Hls from 'hls.js';
 import {LibraryService, Video} from '../../api';
 
@@ -13,6 +13,7 @@ import {LibraryService, Video} from '../../api';
 })
 export class VideosPageComponent implements OnDestroy, OnInit {
     private readonly libraryApi = inject(LibraryService);
+    private readonly http = inject(HttpClient);
     private hls?: Hls;
     @ViewChild('player') private player?: ElementRef<HTMLVideoElement>;
 
@@ -46,7 +47,7 @@ export class VideosPageComponent implements OnDestroy, OnInit {
         this.stopPlayer();
         this.playbackError.set('');
         this.playingVideoId.set(closing ? null : video.video_id);
-        if (!closing) setTimeout(() => this.startPlayer(video));
+        if (!closing) this.verifyManifest(video);
     }
 
     thumbnailError(event: Event): void {
@@ -54,7 +55,9 @@ export class VideosPageComponent implements OnDestroy, OnInit {
     }
 
     playerError(): void {
-        this.playbackError.set('Playback failed. Verify that yt-dlp and ffmpeg are installed on the server.');
+        const nativeError = this.player?.nativeElement.error;
+        console.error('FinTube native video error', nativeError);
+        if (!this.playbackError()) this.playbackError.set(`Browser could not play the media stream${nativeError ? ` (media error ${nativeError.code})` : ''}. Check the browser console for details.`);
     }
 
     ngOnDestroy(): void {
@@ -79,7 +82,16 @@ export class VideosPageComponent implements OnDestroy, OnInit {
         this.hls.attachMedia(element);
         this.hls.on(Hls.Events.MANIFEST_PARSED, () => void element.play().catch(() => undefined));
         this.hls.on(Hls.Events.ERROR, (_event, data) => {
-            if (data.fatal) this.playerError();
+            if (!data.fatal) return;
+            console.error('FinTube HLS error', data);
+            this.playbackError.set(`HLS playback failed: ${data.type} (${data.details}). Check the browser console for details.`);
+        });
+    }
+
+    private verifyManifest(video: Video): void {
+        this.http.get(this.playbackUrl(video), {responseType: 'text'}).subscribe({
+            next: () => setTimeout(() => this.startPlayer(video)),
+            error: (error: unknown) => this.playbackError.set(this.messageFor(error, 'Playback manifest could not be resolved. Check the backend console for a PLAYBACK_MANIFEST_FAILED event.'))
         });
     }
 
@@ -111,8 +123,9 @@ export class VideosPageComponent implements OnDestroy, OnInit {
 
     private messageFor(error: unknown, fallback: string): string {
         if (error instanceof HttpErrorResponse) {
-            const body = error.error as { message?: string } | string | null;
+            const body = error.error as { detail?: string; message?: string } | string | null;
             if (typeof body === 'string' && body.trim()) return body;
+            if (body && typeof body === 'object' && typeof body.detail === 'string' && body.detail.trim()) return body.detail;
             if (body && typeof body === 'object' && typeof body.message === 'string' && body.message.trim()) return body.message;
         }
         return fallback;

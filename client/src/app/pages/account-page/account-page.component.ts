@@ -34,8 +34,8 @@ export class AccountPageComponent implements OnInit {
             this.error.set('Enter your current and new password.');
             return;
         }
-        if (this.newPassword.length < 12) {
-            this.error.set('Use a new password with at least 12 characters.');
+        if (this.newPassword.length < 6) {
+            this.error.set('Use a new password with at least 6 characters.');
             return;
         }
         if (this.newPassword !== this.confirmation) {

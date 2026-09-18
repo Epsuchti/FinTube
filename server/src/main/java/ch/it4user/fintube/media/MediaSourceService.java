@@ -9,6 +9,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -32,6 +34,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Resolves one deterministic representation for a video and persists the result.
@@ -41,9 +45,12 @@ import java.util.regex.Pattern;
 @Service
 public class MediaSourceService {
   private static final String DEFAULT_PO_TOKEN_PROVIDER_ARGS = "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416";
+  private static final String REMUX_FORMAT_VERSION = "-tsv2";
+  private static final Logger LOG = LoggerFactory.getLogger(MediaSourceService.class);
   private static final Pattern EXPIRE = Pattern.compile("(?:^|[?&])expire=(\\d+)");
   private final SettingsService settingsService;
   private final MediaSourceRepository mediaSourceRepository;
+  private final String poTokenProviderUrl;
   private final HttpClient http = HttpClient.newBuilder()
       .connectTimeout(Duration.ofSeconds(20))
       .followRedirects(HttpClient.Redirect.NORMAL)
@@ -51,9 +58,16 @@ public class MediaSourceService {
   private final ObjectMapper json = new ObjectMapper();
   private final ConcurrentHashMap<String, Source> sources = new ConcurrentHashMap<>();
 
-  public MediaSourceService(SettingsService settingsService, MediaSourceRepository mediaSourceRepository) {
+  @Autowired
+  public MediaSourceService(SettingsService settingsService, MediaSourceRepository mediaSourceRepository,
+                            @Value("${fintube.youtube.po-token-provider-url:}") String poTokenProviderUrl) {
     this.settingsService = settingsService;
     this.mediaSourceRepository = mediaSourceRepository;
+    this.poTokenProviderUrl = poTokenProviderUrl;
+  }
+
+  MediaSourceService(SettingsService settingsService, MediaSourceRepository mediaSourceRepository) {
+    this(settingsService, mediaSourceRepository, "");
   }
 
   /** A logical media fragment. audioUrl is null for progressive sources. */
@@ -140,14 +154,14 @@ public class MediaSourceService {
     boolean progressive() { return hasVideo() && hasAudio(); }
   }
 
-  private record ProbeResult(int exitCode, byte[] stdout) {}
+  private record ProbeResult(int exitCode, byte[] stdout, byte[] stderr) {}
 
   /** Load a valid persisted probe before invoking yt-dlp after a restart. */
   public Source source(String video) throws Exception {
     Source memory = sources.get(video);
     if (memory != null && !memory.expired()) return memory;
     Source persisted = load(video);
-    if (persisted != null && !persisted.expired()) {
+    if (persisted != null && !persisted.expired() && currentFormat(persisted)) {
       sources.put(video, persisted);
       return persisted;
     }
@@ -165,8 +179,7 @@ public class MediaSourceService {
     if (cookieFile != null && !cookieFile.isBlank()) command.addAll(List.of("--cookies", cookieFile));
     String playerClient = settings.get("youtube_player_client");
     String poToken = settings.get("youtube_po_token");
-    String providerArgs = "true".equalsIgnoreCase(settings.getOrDefault("youtube_po_token_provider_enabled", "true"))
-        ? settings.getOrDefault("youtube_po_token_provider_args", DEFAULT_PO_TOKEN_PROVIDER_ARGS) : "";
+    String providerArgs = providerArguments(settings);
     if (playerClient != null && !playerClient.isBlank()) command.addAll(List.of("--extractor-args", "youtube:player_client=" + playerClient));
     if (poToken != null && !poToken.isBlank()) command.addAll(List.of("--extractor-args", "youtube:po_token=" + poToken));
     // Provider plugins are discovered by yt-dlp itself. This option only forwards
@@ -181,7 +194,11 @@ public class MediaSourceService {
       if (index > 0 && "--extractor-args".equals(command.get(index - 1))) { command.remove(index); command.remove(index - 1); }
       result = runProbe(command, bin);
     }
-    if (result.exitCode() != 0) throw new IllegalStateException("yt-dlp probe failed with exit code " + result.exitCode());
+    if (result.exitCode() != 0) {
+      String detail = probeError(result.stderr());
+      throw new IllegalStateException("yt-dlp probe failed with exit code " + result.exitCode()
+          + (detail.isBlank() ? "" : ": " + detail));
+    }
     JsonNode root = json.readTree(result.stdout());
     Source selected = select(root);
     persist(video, selected);
@@ -189,14 +206,53 @@ public class MediaSourceService {
     return selected;
   }
 
+  private String providerArguments(java.util.Map<String, String> settings) {
+    if (!"true".equalsIgnoreCase(settings.getOrDefault("youtube_po_token_provider_enabled", "true"))) return "";
+    if (poTokenProviderUrl != null && !poTokenProviderUrl.isBlank()) {
+      return "youtubepot-bgutilhttp:base_url=" + poTokenProviderUrl;
+    }
+    return settings.getOrDefault("youtube_po_token_provider_args", DEFAULT_PO_TOKEN_PROVIDER_ARGS);
+  }
+
   private ProbeResult runProbe(List<String> command, String bin) throws Exception {
+    LOG.info("event=YTDLP_PROBE_STARTED command={}", displayCommand(command));
     Process process = startProbe(command, bin);
     CompletableFuture<byte[]> stdout = CompletableFuture.supplyAsync(() -> read(process.getInputStream()));
     CompletableFuture<byte[]> stderr = CompletableFuture.supplyAsync(() -> read(process.getErrorStream()));
     int exitCode = process.waitFor();
     byte[] output = stdout.join();
-    stderr.join();
-    return new ProbeResult(exitCode, output);
+    byte[] error = stderr.join();
+    if (exitCode != 0) {
+      LOG.warn("event=YTDLP_PROBE_FAILED exitCode={} stderr={}", exitCode, probeError(error));
+    } else {
+      LOG.info("event=YTDLP_PROBE_SUCCEEDED");
+    }
+    return new ProbeResult(exitCode, output, error);
+  }
+
+  private static String probeError(byte[] bytes) {
+    String value = new String(bytes, StandardCharsets.UTF_8).strip();
+    return value.length() > 4000 ? value.substring(0, 4000) + "…" : value;
+  }
+
+  private static String displayCommand(List<String> command) {
+    List<String> safe = new ArrayList<>(command);
+    for (int index = 0; index < safe.size(); index++) {
+      String argument = safe.get(index);
+      if ("--proxy".equals(argument) && index + 1 < safe.size()) {
+        safe.set(index + 1, redactProxy(safe.get(index + 1)));
+      } else if (argument.startsWith("youtube:po_token=")) {
+        safe.set(index, "youtube:po_token=<redacted>");
+      }
+    }
+    return String.join(" ", safe);
+  }
+
+  private static String redactProxy(String proxy) {
+    int schemeEnd = proxy.indexOf("://");
+    int userInfoEnd = schemeEnd < 0 ? -1 : proxy.indexOf('@', schemeEnd + 3);
+    if (userInfoEnd < 0) return proxy;
+    return proxy.substring(0, schemeEnd + 3) + "<redacted>@" + proxy.substring(userInfoEnd + 1);
   }
 
   private static byte[] read(InputStream stream) {
@@ -347,7 +403,7 @@ public class MediaSourceService {
   }
 
   private Source makeSource(JsonNode root, Candidate video, Candidate audio, boolean progressive) {
-    String format = progressive ? video.id() : video.id() + "+" + audio.id();
+    String format = progressive ? video.id() : video.id() + "+" + audio.id() + REMUX_FORMAT_VERSION;
     List<JsonNode> videoParts = parts(video.node());
     List<JsonNode> audioParts = audio == null ? List.of() : parts(audio.node());
     int count = videoParts.size();
@@ -382,6 +438,9 @@ public class MediaSourceService {
     List<JsonNode> result = new ArrayList<>();
     if (format.path("fragments").isArray()) format.path("fragments").forEach(result::add);
     return result;
+  }
+  private static boolean currentFormat(Source source) {
+    return source.progressive() || source.format().endsWith(REMUX_FORMAT_VERSION);
   }
   private boolean seekable(Candidate candidate) { return candidate.node().path("fragments").isArray() && candidate.node().path("fragments").size() > 1; }
   private static boolean isHls(Candidate candidate) { return isHls(candidate.node()); }

@@ -34,8 +34,7 @@ export class AdminSettingsPageComponent implements OnInit {
         subscription_sync_minutes: 'Subscription sync interval (minutes)',
         youtube_player_client: 'YouTube player client',
         youtube_po_token_provider_enabled: 'PO token provider enabled',
-        youtube_po_token: 'YouTube PO token',
-        youtube_po_token_provider_args: 'PO token provider arguments',
+        youtube_po_token: 'Manual YouTube PO token (optional)',
         jellyfin_enabled: 'Jellyfin enabled',
         jellyfin_url: 'Jellyfin URL',
         jellyfin_api_key: 'Jellyfin API key',
@@ -55,8 +54,7 @@ export class AdminSettingsPageComponent implements OnInit {
         'jellyfin_api_key',
         'proxy_password',
         'cookie_file',
-        'youtube_po_token',
-        'youtube_po_token_provider_args'
+        'youtube_po_token'
     ]);
     readonly settingGroups: SettingGroup[] = [
         {
@@ -69,7 +67,7 @@ export class AdminSettingsPageComponent implements OnInit {
         },
         {
             title: 'YouTube',
-            keys: ['youtube_api_key', 'initial_channel_import_count', 'subscription_sync_minutes', 'youtube_player_client', 'youtube_po_token_provider_enabled', 'youtube_po_token', 'youtube_po_token_provider_args']
+            keys: ['youtube_api_key', 'initial_channel_import_count', 'subscription_sync_minutes', 'youtube_player_client', 'youtube_po_token_provider_enabled', 'youtube_po_token']
         },
         {
             title: 'Jellyfin',
@@ -96,6 +94,16 @@ export class AdminSettingsPageComponent implements OnInit {
 
     labelFor(key: string): string {
         return this.settingLabels[key] ?? key;
+    }
+
+    helpFor(key: string): string {
+        if (key === 'youtube_po_token_provider_enabled') return 'Leave enabled. The provider address is configured by the deployment, not here.';
+        if (key === 'youtube_po_token') return 'Usually leave blank. Use only a manually generated CLIENT.CONTEXT+TOKEN value.';
+        return this.secretSettings.has(key) ? 'Secret · stored server-side and never shown to normal users' : 'Administrator-controlled global value';
+    }
+
+    isBoolean(key: string): boolean {
+        return key === 'youtube_po_token_provider_enabled' || key === 'jellyfin_enabled' || key === 'jellyfin_auto_refresh' || key === 'jellyfin_runtime_sync';
     }
 
     setSetting(key: string, value: string): void {

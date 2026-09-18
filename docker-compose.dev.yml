@@ -1,0 +1,23 @@
+name: fintube-dev
+
+services:
+  pot-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:2.0.0-node
+    command: ["--host", "0.0.0.0"]
+    ports:
+      - "127.0.0.1:4416:4416"
+    restart: unless-stopped
+
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    ports:
+      - "127.0.0.1:8096:8096"
+    volumes:
+      - /Users/eric/develop/FinTube/server/data/users:/media/users:ro
+      - jellyfin-config:/config
+      - jellyfin-cache:/cache
+    restart: unless-stopped
+
+volumes:
+  jellyfin-config:
+  jellyfin-cache:

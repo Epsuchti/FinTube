@@ -35,7 +35,7 @@ public class AuthenticationApplicationService {
     public Result register(RegisterRequest request) {
         String username = required(request.getUsername(), "username");
         String password = required(request.getPassword(), "password");
-        if (!username.matches("[A-Za-z0-9_.-]{3,48}") || password.length() < 12) {
+        if (!username.matches("[A-Za-z0-9_.-]{3,48}") || password.length() < 6) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "username or password does not meet policy");
         }
         String slug = auth.slug(username);

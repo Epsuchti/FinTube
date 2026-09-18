@@ -59,8 +59,8 @@ export class AuthPageComponent {
             this.error.set('Passwords do not match.');
             return;
         }
-        if (this.password.length < 12) {
-            this.error.set('Use a password with at least 12 characters.');
+        if (this.password.length < 6) {
+            this.error.set('Use a password with at least 6 characters.');
             return;
         }
         this.loading.set(true);

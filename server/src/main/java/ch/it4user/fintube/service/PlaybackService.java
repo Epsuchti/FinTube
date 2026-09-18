@@ -50,13 +50,13 @@ public class PlaybackService {
             output.append("#EXT-X-TARGETDURATION:").append(source.targetDuration()).append("\n#EXT-X-MEDIA-SEQUENCE:0\n");
             for (var fragment : source.fragments()) {
                 output.append("#EXTINF:").append(String.format(java.util.Locale.ROOT, "%.3f", fragment.seconds())).append(",\n/play/")
-                        .append(video).append("/fragment/").append(fragment.id()).append("?token=").append(resolvedToken).append("\n");
+                        .append(video).append("/fragment/").append(fragment.id()).append(fragmentExtension(source)).append("?token=").append(resolvedToken).append("\n");
             }
             return output.append("#EXT-X-ENDLIST\n").toString();
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {
-            LOG.error("Playback manifest failed for video={}", video, e);
+            LOG.error("event=PLAYBACK_MANIFEST_FAILED video={} reason={}", video, e.getMessage(), e);
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "playback manifest could not be resolved", e);
         }
     }
@@ -70,19 +70,20 @@ public class PlaybackService {
             String resolvedToken = resolveToken(video, token, request);
             valid(video, resolvedToken);
             var source = sources.source(video);
-            var sourceFragment = source.fragments().stream().filter(item -> item.id().equals(fragmentId)).findFirst()
+            String resolvedFragmentId = fragmentId(fragmentId);
+            var sourceFragment = source.fragments().stream().filter(item -> item.id().equals(resolvedFragmentId)).findFirst()
                     .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
             Path path;
             InputStream stream;
             try {
-                path = fragments.get(video, source.format(), fragmentId, sourceFragment.url(), sourceFragment.audioUrl(), true);
-                stream = fragments.open(video, source.format(), fragmentId, sourceFragment.url(), sourceFragment.audioUrl(), true);
+                path = fragments.get(video, source.format(), resolvedFragmentId, sourceFragment.url(), sourceFragment.audioUrl(), true);
+                stream = fragments.open(video, source.format(), resolvedFragmentId, sourceFragment.url(), sourceFragment.audioUrl(), true);
             } catch (FragmentManager.ExpiredSourceException e) {
                 source = sources.refresh(video);
-                var refreshed = source.fragments().stream().filter(item -> item.id().equals(fragmentId)).findFirst()
+                var refreshed = source.fragments().stream().filter(item -> item.id().equals(resolvedFragmentId)).findFirst()
                         .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_GATEWAY));
-                path = fragments.get(video, source.format(), fragmentId, refreshed.url(), refreshed.audioUrl(), true);
-                stream = fragments.open(video, source.format(), fragmentId, refreshed.url(), refreshed.audioUrl(), true);
+                path = fragments.get(video, source.format(), resolvedFragmentId, refreshed.url(), refreshed.audioUrl(), true);
+                stream = fragments.open(video, source.format(), resolvedFragmentId, refreshed.url(), refreshed.audioUrl(), true);
             }
             MediaType type = source.progressive()
                     ? ("webm".equalsIgnoreCase(source.container()) ? MediaType.parseMediaType("video/webm") : MediaType.parseMediaType("video/mp4"))
@@ -91,7 +92,7 @@ public class PlaybackService {
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {
-            LOG.error("Playback fragment failed for video={} fragment={}", video, fragmentId, e);
+            LOG.error("event=PLAYBACK_FRAGMENT_FAILED video={} fragment={} reason={}", video, fragmentId, e.getMessage(), e);
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "playback fragment could not be served", e);
         }
     }
@@ -110,6 +111,18 @@ public class PlaybackService {
         if (!userVideos.existsByIdVideoIdAndPlaybackToken(video, token)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         }
+    }
+
+    private static String fragmentExtension(MediaSourceService.Source source) {
+        if (!source.progressive()) return ".ts";
+        return "webm".equalsIgnoreCase(source.container()) ? ".webm" : ".mp4";
+    }
+
+    private static String fragmentId(String value) {
+        for (String extension : new String[]{".ts", ".mp4", ".webm"}) {
+            if (value.endsWith(extension)) return value.substring(0, value.length() - extension.length());
+        }
+        return value;
     }
 
     public record Fragment(InputStreamResource resource, long contentLength, MediaType contentType) {}
