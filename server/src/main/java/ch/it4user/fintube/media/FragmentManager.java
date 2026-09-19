@@ -13,10 +13,6 @@ import org.springframework.stereotype.Service;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.Authenticator;
-import java.net.InetSocketAddress;
-import java.net.PasswordAuthentication;
-import java.net.ProxySelector;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -44,8 +40,7 @@ public class FragmentManager {
   final SettingsService settingsService;
   final CacheEntryRepository cacheEntries;
   final CachedFragmentRepository cachedFragments;
-  final HttpClient http;
-  private volatile ProxyClient proxyClient;
+  final ProxiedHttpClient externalHttp;
   /** One upstream operation per logical fragment. A low-priority operation can
    * be promoted by a foreground waiter without starting a second request. */
   final ConcurrentHashMap<String, Inflight> inflight = new ConcurrentHashMap<>();
@@ -59,23 +54,22 @@ public class FragmentManager {
     Inflight(boolean high) { this.high = high; }
   }
 
-  private record ProxyClient(String url, String username, String password, HttpClient http) { }
-
   @Autowired
   public FragmentManager(ApplicationPaths paths, SettingsService settingsService,
-                         CacheEntryRepository cacheEntries, CachedFragmentRepository cachedFragments) {
-    this(paths, settingsService, cacheEntries, cachedFragments,
-        HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build());
+                         CacheEntryRepository cacheEntries, CachedFragmentRepository cachedFragments,
+                         ProxiedHttpClient externalHttp) {
+    this.paths = paths;
+    this.settingsService = settingsService;
+    this.cacheEntries = cacheEntries;
+    this.cachedFragments = cachedFragments;
+    this.externalHttp = externalHttp;
   }
 
   FragmentManager(ApplicationPaths paths, SettingsService settingsService,
                   CacheEntryRepository cacheEntries, CachedFragmentRepository cachedFragments,
                   HttpClient http) {
-    this.paths = paths;
-    this.settingsService = settingsService;
-    this.cacheEntries = cacheEntries;
-    this.cachedFragments = cachedFragments;
-    this.http = http;
+    this(paths, settingsService, cacheEntries, cachedFragments,
+        new ProxiedHttpClient(settingsService, http));
   }
 
   /** Backwards-compatible progressive fragment entry point. */
@@ -270,7 +264,7 @@ public class FragmentManager {
     HttpRequest request = HttpRequest.newBuilder(source).GET().build();
     // Read in bounded chunks instead of BodyHandlers.ofFile so a low-priority
     // transfer can yield between reads when unrelated playback is active.
-    HttpResponse<InputStream> response = client().send(request, HttpResponse.BodyHandlers.ofInputStream());
+    HttpResponse<InputStream> response = externalHttp.send(request, HttpResponse.BodyHandlers.ofInputStream());
     if (response.statusCode() == 401 || response.statusCode() == 403 || response.statusCode() == 410) {
       response.body().close();
       throw new ExpiredSourceException();
@@ -299,39 +293,6 @@ public class FragmentManager {
     }
     if (bytes == 0 || !Files.isRegularFile(target) || Files.size(target) == 0)
       throw new IOException("empty upstream fragment");
-  }
-
-  private HttpClient client() {
-    var settings = settingsService.values(false);
-    String url = settings.getOrDefault("proxy_url", "").trim();
-    if (url.isBlank()) return http;
-    String username = settings.getOrDefault("proxy_username", "");
-    String password = settings.getOrDefault("proxy_password", "");
-    ProxyClient current = proxyClient;
-    if (current != null && current.url().equals(url) && current.username().equals(username) && current.password().equals(password))
-      return current.http();
-    synchronized (this) {
-      current = proxyClient;
-      if (current != null && current.url().equals(url) && current.username().equals(username) && current.password().equals(password))
-        return current.http();
-      URI proxy = URI.create(url);
-      if (!"http".equalsIgnoreCase(proxy.getScheme()) && !"https".equalsIgnoreCase(proxy.getScheme()))
-        throw new IllegalArgumentException("proxy_url must use http or https for fragment downloads");
-      if (proxy.getHost() == null) throw new IllegalArgumentException("proxy_url must include a host");
-      int port = proxy.getPort() < 0 ? ("https".equalsIgnoreCase(proxy.getScheme()) ? 443 : 80) : proxy.getPort();
-      var builder = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL)
-          .proxy(ProxySelector.of(InetSocketAddress.createUnresolved(proxy.getHost(), port)));
-      if (!username.isBlank() || !password.isBlank()) {
-        builder.authenticator(new Authenticator() {
-          @Override protected PasswordAuthentication getPasswordAuthentication() {
-            return new PasswordAuthentication(username, password.toCharArray());
-          }
-        });
-      }
-      HttpClient configured = builder.build();
-      proxyClient = new ProxyClient(url, username, password, configured);
-      return configured;
-    }
   }
 
   /** Wait while an unrelated interactive request is active. */

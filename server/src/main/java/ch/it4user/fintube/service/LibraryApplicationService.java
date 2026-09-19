@@ -12,6 +12,7 @@ import ch.it4user.fintube.core.ApplicationClock;
 import ch.it4user.fintube.core.ApplicationPaths;
 import ch.it4user.fintube.core.SettingsService;
 import ch.it4user.fintube.integration.YouTubeSyncService;
+import ch.it4user.fintube.media.ProxiedHttpClient;
 import ch.it4user.fintube.persistence.entities.UserVideoEntity;
 import ch.it4user.fintube.persistence.repositories.LibraryVideoRepository;
 import ch.it4user.fintube.persistence.entities.YouTubeChannelEntity;
@@ -34,7 +35,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.URLEncoder;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
@@ -74,7 +74,7 @@ public class LibraryApplicationService {
     private final UserYouTubeApiKeyService youtubeApiKeys;
     private final AuditLogger audit;
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final HttpClient http = HttpClient.newHttpClient();
+    private final ProxiedHttpClient externalHttp;
 
     public LibraryApplicationService(SettingsService settings,
                                      ApplicationPaths paths,
@@ -85,7 +85,8 @@ public class LibraryApplicationService {
                                      AuthorizationService authorization,
                                      YouTubeSyncService sync,
                                      AuditLogger audit,
-                                     UserYouTubeApiKeyService youtubeApiKeys) {
+                                     UserYouTubeApiKeyService youtubeApiKeys,
+                                     ProxiedHttpClient externalHttp) {
         this.settings = settings;
         this.paths = paths;
         this.channels = channels;
@@ -96,6 +97,7 @@ public class LibraryApplicationService {
         this.sync = sync;
         this.audit = audit;
         this.youtubeApiKeys = youtubeApiKeys;
+        this.externalHttp = externalHttp;
     }
 
     public List<Subscription> subscriptions(HttpServletRequest request) {
@@ -354,6 +356,8 @@ public class LibraryApplicationService {
                 executable, "--ignore-config", "--flat-playlist", "--dump-single-json", "--skip-download",
                 "--no-warnings", "--playlist-end", Integer.toString(MAX_SUBSCRIPTION_FEED_ITEMS),
                 "--cookies", cookieFile.toString(), ":ytsubs"));
+        String proxy = externalHttp.proxyArgument();
+        if (!proxy.isBlank()) command.addAll(List.of("--proxy", proxy));
         Process process;
         try {
             process = new ProcessBuilder(command).redirectErrorStream(false).start();
@@ -448,7 +452,7 @@ public class LibraryApplicationService {
                 : !handle.isBlank()
                 ? "https://www.googleapis.com/youtube/v3/channels?part=snippet&forHandle=" + URLEncoder.encode(handle, StandardCharsets.UTF_8) + "&key=" + URLEncoder.encode(key, StandardCharsets.UTF_8)
                 : "https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&maxResults=1&q=" + URLEncoder.encode(raw, StandardCharsets.UTF_8) + "&key=" + URLEncoder.encode(key, StandardCharsets.UTF_8);
-        HttpResponse<String> response = http.send(
+        HttpResponse<String> response = externalHttp.send(
                 HttpRequest.newBuilder(URI.create(endpoint)).GET().build(),
                 HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() < 200 || response.statusCode() >= 300) {

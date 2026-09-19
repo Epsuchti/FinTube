@@ -4,6 +4,7 @@ import ch.it4user.fintube.core.ApplicationPaths;
 import ch.it4user.fintube.core.ApplicationClock;
 import ch.it4user.fintube.core.SettingsService;
 import ch.it4user.fintube.media.BackgroundFillService;
+import ch.it4user.fintube.media.ProxiedHttpClient;
 import ch.it4user.fintube.persistence.entities.UserEntity;
 import ch.it4user.fintube.persistence.repositories.UserRepository;
 import ch.it4user.fintube.persistence.entities.UserVideoEntity;
@@ -24,7 +25,6 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
@@ -69,14 +69,15 @@ public class YouTubeSyncService {
   final BackgroundFillService filler;
   final UserYouTubeApiKeyService youtubeApiKeys;
   final ObjectMapper json = new ObjectMapper();
-  final HttpClient http = HttpClient.newHttpClient();
+  final ProxiedHttpClient externalHttp;
   private final ConcurrentHashMap<String, Object> channelLocks = new ConcurrentHashMap<>();
 
   public YouTubeSyncService(SettingsService settings, YouTubeChannelRepository channels,
                             YouTubeSubscriptionRepository subscriptions, VideoRepository videos,
                             UserVideoRepository userVideos, UserRepository users,
                             ApplicationPaths paths, JellyfinSyncService jellyfin,
-                            BackgroundFillService filler, UserYouTubeApiKeyService youtubeApiKeys) {
+                            BackgroundFillService filler, UserYouTubeApiKeyService youtubeApiKeys,
+                            ProxiedHttpClient externalHttp) {
     this.settings = settings;
     this.channels = channels;
     this.subscriptions = subscriptions;
@@ -87,6 +88,7 @@ public class YouTubeSyncService {
     this.jellyfin = jellyfin;
     this.filler = filler;
     this.youtubeApiKeys = youtubeApiKeys;
+    this.externalHttp = externalHttp;
   }
 
   /** Synchronize once, then ensure the requested user's known videos are linked. */
@@ -496,7 +498,7 @@ public class YouTubeSyncService {
   private void downloadThumbnail(String url, Path target) {
     if (url == null || url.isBlank() || Files.exists(target)) return;
     try {
-      HttpResponse<byte[]> response = http.send(HttpRequest.newBuilder(URI.create(url)).GET().build(),
+      HttpResponse<byte[]> response = externalHttp.send(HttpRequest.newBuilder(URI.create(url)).GET().build(),
           HttpResponse.BodyHandlers.ofByteArray());
       if (response.statusCode() / 100 == 2) {
         Path tmp = target.resolveSibling(target.getFileName() + ".tmp");
@@ -511,7 +513,7 @@ public class YouTubeSyncService {
   }
 
   private JsonNode request(String url) throws Exception {
-    HttpResponse<String> response = http.send(HttpRequest.newBuilder(URI.create(url)).GET().build(),
+    HttpResponse<String> response = externalHttp.send(HttpRequest.newBuilder(URI.create(url)).GET().build(),
         HttpResponse.BodyHandlers.ofString());
     if (response.statusCode() / 100 != 2) {
       String detail = "";

@@ -17,7 +17,6 @@ import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.URLEncoder;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
@@ -52,19 +51,23 @@ public class MediaSourceService {
   private final SettingsService settingsService;
   private final MediaSourceRepository mediaSourceRepository;
   private final String poTokenProviderUrl;
-  private final HttpClient http = HttpClient.newBuilder()
-      .connectTimeout(Duration.ofSeconds(20))
-      .followRedirects(HttpClient.Redirect.NORMAL)
-      .build();
+  private final ProxiedHttpClient externalHttp;
   private final ObjectMapper json = new ObjectMapper();
   private final ConcurrentHashMap<String, Source> sources = new ConcurrentHashMap<>();
 
   @Autowired
   public MediaSourceService(SettingsService settingsService, MediaSourceRepository mediaSourceRepository,
-                            @Value("${fintube.youtube.po-token-provider-url:}") String poTokenProviderUrl) {
+                            @Value("${fintube.youtube.po-token-provider-url:}") String poTokenProviderUrl,
+                            ProxiedHttpClient externalHttp) {
     this.settingsService = settingsService;
     this.mediaSourceRepository = mediaSourceRepository;
     this.poTokenProviderUrl = poTokenProviderUrl;
+    this.externalHttp = externalHttp;
+  }
+
+  public MediaSourceService(SettingsService settingsService, MediaSourceRepository mediaSourceRepository,
+                            String poTokenProviderUrl) {
+    this(settingsService, mediaSourceRepository, poTokenProviderUrl, new ProxiedHttpClient(settingsService));
   }
 
   MediaSourceService(SettingsService settingsService, MediaSourceRepository mediaSourceRepository) {
@@ -180,7 +183,7 @@ public class MediaSourceService {
     var settings = settingsService.values(false);
     String bin = settings.getOrDefault("yt_dlp_path", "yt-dlp");
     List<String> command = new ArrayList<>(List.of(bin, "-J", "--no-playlist"));
-    String proxy = proxyArgument(settings);
+    String proxy = externalHttp.proxyArgument(settings);
     if (proxy != null && !proxy.isBlank()) command.addAll(List.of("--proxy", proxy));
     String cookieFile = settings.get("cookie_file");
     if (cookieFile != null && !cookieFile.isBlank()) command.addAll(List.of("--cookies", cookieFile));
@@ -284,36 +287,6 @@ public class MediaSourceService {
    * argument at the last possible moment from encrypted settings, with strict
    * percent encoding and no credential-bearing value ever written to logs.
    */
-  private String proxyArgument(java.util.Map<String, String> settings) {
-    String base = settings.get("proxy_url");
-    if (base == null || base.isBlank()) return base;
-    String username = settings.getOrDefault("proxy_username", "");
-    String password = settings.getOrDefault("proxy_password", "");
-    if (username.isBlank() && password.isBlank()) return base;
-    try {
-      URI uri = URI.create(base);
-      String authority = percentEncode(username) + ":" + percentEncode(password) + "@" + uri.getRawAuthority();
-      StringBuilder result = new StringBuilder(uri.getScheme()).append("://").append(authority);
-      if (uri.getRawPath() != null) result.append(uri.getRawPath());
-      if (uri.getRawQuery() != null) result.append('?').append(uri.getRawQuery());
-      if (uri.getRawFragment() != null) result.append('#').append(uri.getRawFragment());
-      return result.toString();
-    } catch (IllegalArgumentException e) {
-      throw new IllegalArgumentException("invalid proxy configuration");
-    }
-  }
-
-  private static String percentEncode(String value) {
-    StringBuilder out = new StringBuilder();
-    for (byte b : value.getBytes(StandardCharsets.UTF_8)) {
-      int c = b & 0xff;
-      if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-          (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') out.append((char)c);
-      else out.append('%').append(String.format(Locale.ROOT, "%02X", c));
-    }
-    return out.toString();
-  }
-
   /** Select the best representation under the administrator's quality/codec policy. */
   public Source select(JsonNode root) throws Exception {
     String quality = setting("stream_quality", "720").toLowerCase(Locale.ROOT);
@@ -379,7 +352,7 @@ public class MediaSourceService {
   private ArrayNode hlsFragments(URI playlist, int depth) throws Exception {
     if (depth > 2) throw new IllegalStateException("HLS playlist nesting is too deep");
     HttpRequest request = HttpRequest.newBuilder(playlist).timeout(Duration.ofSeconds(30)).GET().build();
-    HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    HttpResponse<String> response = externalHttp.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
     if (response.statusCode() < 200 || response.statusCode() > 299)
       throw new IllegalStateException("HLS playlist request returned status " + response.statusCode());
     List<String> lines = response.body().lines().toList();
