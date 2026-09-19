@@ -46,6 +46,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
@@ -141,8 +142,8 @@ public class LibraryApplicationService {
                 Files.write(cookieFile, cookieBytes);
                 List<Channel> discovered = discoverSubscriptionChannels(cookieFile);
                 if (discovered.isEmpty()) {
-                    throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
-                            "no YouTube subscription channels were found");
+                    throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                            "no YouTube subscription channels were found; verify that the cookies belong to a signed-in account with subscriptions");
                 }
                 int imported = 0;
                 int skipped = 0;
@@ -383,8 +384,7 @@ public class LibraryApplicationService {
             Throwable cause = errorOutput.isBlank()
                     ? null
                     : new IllegalStateException("yt-dlp stderr: " + errorOutput);
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
-                    "yt-dlp could not read the YouTube subscriptions feed", cause);
+            throw subscriptionFeedFailure(errorOutput, cause);
         }
         JsonNode root = objectMapper.readTree(new String(outputBytes, StandardCharsets.UTF_8));
         return channelsFromFeed(root);
@@ -398,6 +398,30 @@ public class LibraryApplicationService {
                 throw new RuntimeException(failure);
             }
         });
+    }
+
+    static ResponseStatusException subscriptionFeedFailure(String errorOutput, Throwable cause) {
+        String normalized = errorOutput == null ? "" : errorOutput.toLowerCase(Locale.ROOT);
+        if (normalized.contains("login details are needed")
+                || normalized.contains("authentication required")
+                || normalized.contains("sign in to confirm")
+                || normalized.contains("cookies are no longer valid")
+                || normalized.contains("cookies are expired")) {
+            return new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "YouTube cookies are invalid or expired; export a fresh Netscape cookie file while signed in to YouTube",
+                    cause);
+        }
+        if (normalized.contains("proxy")
+                || normalized.contains("timed out")
+                || normalized.contains("connection")
+                || normalized.contains("network is unreachable")) {
+            return new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    "YouTube could not be reached while importing subscriptions; check the proxy and network settings",
+                    cause);
+        }
+        return new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                "YouTube subscription import failed; check the yt-dlp and proxy settings and try again",
+                cause);
     }
 
     private List<Channel> channelsFromFeed(JsonNode root) {

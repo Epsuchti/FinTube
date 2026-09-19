@@ -21,7 +21,7 @@ paths:
     get: { tags: [ Library ], operationId: listSubscriptions, responses: { '200': { description: Subscriptions, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Subscription' } } } } } } }
     post: { tags: [ Library ], operationId: addSubscription, requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AddSubscriptionRequest' } } } }, responses: { '200': { description: Added } } }
   /subscriptions/import-cookies:
-    post: { tags: [ Library ], operationId: importSubscriptionsFromCookies, requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ImportCookiesRequest' } } } }, responses: { '200': { description: Imported, content: { application/json: { schema: { $ref: '#/components/schemas/ImportChannelsResult' } } } } } }
+    post: { tags: [ Library ], operationId: importSubscriptionsFromCookies, requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ImportCookiesRequest' } } } }, responses: { '200': { description: Imported, content: { application/json: { schema: { $ref: '#/components/schemas/ImportChannelsResult' } } } }, '400': { description: Invalid cookie export or unauthenticated YouTube cookies }, '422': { description: No subscription channels found }, '502': { description: YouTube or proxy request failed }, '504': { description: YouTube subscription import timed out } } }
   /subscriptions/refresh-all:
     post: { tags: [ Library ], operationId: refreshAllSubscriptions, responses: { '200': { description: Refreshed all enabled subscriptions, content: { application/json: { schema: { $ref: '#/components/schemas/RefreshResult' } } } } } }
   /subscriptions/{id}:
