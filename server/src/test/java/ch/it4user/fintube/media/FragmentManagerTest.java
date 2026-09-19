@@ -210,6 +210,26 @@ class FragmentManagerTest {
   }
 
   @Test
+  void sourceSelectorRecognizesSuffixedHlsAudioAndPrefersOriginalTrack() throws Exception {
+    MediaSourceService service = new MediaSourceService(settings, mediaSources);
+    when(settings.value("stream_quality")).thenReturn("1080");
+    String base = "http://127.0.0.1:" + server.getAddress().getPort();
+    var root = new ObjectMapper().readTree("""
+        {"duration":12,"formats":[
+          {"format_id":"312","height":1080,"vcodec":"avc1.640020","acodec":"none","ext":"mp4","protocol":"m3u8_native","url":"%s/video.m3u8"},
+          {"format_id":"233-0","height":0,"vcodec":"none","acodec":null,"ext":"mp4","protocol":"m3u8_native","language":"de","format_note":"Deutsch - dubbed-auto","url":"%s/audio.m3u8"},
+          {"format_id":"233-20","height":0,"vcodec":"none","acodec":null,"ext":"mp4","protocol":"m3u8_native","language":"en-US","language_preference":10,"format_note":"American English - original (original)","url":"%s/audio.m3u8"}
+        ]}
+        """.formatted(base, base, base));
+
+    MediaSourceService.Source selected = service.select(root);
+
+    assertEquals("312+233-20-tsv5", selected.format());
+    assertEquals("aac", selected.audioCodec());
+    assertEquals(2, selected.fragments().size());
+  }
+
+  @Test
   void unavailableStreamTimestampFallsBackToUnshiftedRemux() {
     assertNull(FragmentManager.parseStreamStart("N/A"));
     assertNull(FragmentManager.parseStreamStart(""));

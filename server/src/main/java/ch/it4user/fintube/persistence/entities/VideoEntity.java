@@ -34,6 +34,9 @@ public class VideoEntity {
   @Column(name = "is_short", nullable = false)
   private int isShort;
 
+  @Column(name = "is_live_stream", nullable = false)
+  private int isLiveStream;
+
   @Column(name = "thumbnail_url", length = 4096)
   private String thumbnailUrl;
 
@@ -49,6 +52,13 @@ public class VideoEntity {
   public VideoEntity(String videoId, String channelId, String title, String description,
                      String publishedAt, int durationSeconds, int isShort, String thumbnailUrl,
                      String availability, String metadataUpdatedAt) {
+    this(videoId, channelId, title, description, publishedAt, durationSeconds, isShort, 0,
+        thumbnailUrl, availability, metadataUpdatedAt);
+  }
+
+  public VideoEntity(String videoId, String channelId, String title, String description,
+                     String publishedAt, int durationSeconds, int isShort, int isLiveStream,
+                     String thumbnailUrl, String availability, String metadataUpdatedAt) {
     this.videoId = videoId;
     this.channelId = channelId;
     this.title = title;
@@ -56,6 +66,7 @@ public class VideoEntity {
     this.publishedAt = publishedAt;
     this.durationSeconds = durationSeconds;
     this.isShort = isShort;
+    this.isLiveStream = isLiveStream;
     this.thumbnailUrl = thumbnailUrl;
     this.availability = availability;
     this.metadataUpdatedAt = metadataUpdatedAt;
@@ -87,6 +98,10 @@ public class VideoEntity {
 
   public int getIsShort() {
     return isShort;
+  }
+
+  public int getIsLiveStream() {
+    return isLiveStream;
   }
 
   public String getThumbnailUrl() {
@@ -123,6 +138,10 @@ public class VideoEntity {
 
   public void setIsShort(int isShort) {
     this.isShort = isShort;
+  }
+
+  public void setIsLiveStream(int isLiveStream) {
+    this.isLiveStream = isLiveStream;
   }
 
   public void setThumbnailUrl(String thumbnailUrl) {

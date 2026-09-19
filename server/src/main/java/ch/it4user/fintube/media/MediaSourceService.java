@@ -169,17 +169,35 @@ public class MediaSourceService {
   /** Load a valid persisted probe before invoking yt-dlp after a restart. */
   public Source source(String video) throws Exception {
     Source memory = sources.get(video);
-    if (memory != null && !memory.expired() && currentFormat(memory)) return memory;
+    if (memory != null && !memory.expired() && currentFormat(memory)) {
+      LOG.debug("event=MEDIA_SOURCE_CACHE_HIT video={} cache=memory format={} fragments={}",
+          video, memory.format(), memory.fragments().size());
+      return memory;
+    }
+    String memoryReason = memory == null ? "memory_miss"
+        : memory.expired() ? "memory_expired" : "memory_format_changed";
     Source persisted = load(video);
     if (persisted != null && !persisted.expired() && currentFormat(persisted)) {
       sources.put(video, persisted);
+      LOG.debug("event=MEDIA_SOURCE_CACHE_HIT video={} cache=persisted format={} fragments={}",
+          video, persisted.format(), persisted.fragments().size());
       return persisted;
     }
-    return refresh(video);
+    String persistedReason = persisted == null ? "persisted_miss"
+        : persisted.expired() ? "persisted_expired" : "persisted_format_changed";
+    String reason = memory == null ? persistedReason : memoryReason;
+    LOG.info("event=MEDIA_SOURCE_REFRESH_REQUIRED video={} reason={} memoryFormat={} memoryExpiresAt={} persistedFormat={} persistedExpiresAt={}",
+        video, reason, formatOrNull(memory), expiresAtOrNull(memory), formatOrNull(persisted), expiresAtOrNull(persisted));
+    return refresh(video, reason);
   }
 
   /** Force a new yt-dlp probe, replacing the persisted source URL set. */
-  public synchronized Source refresh(String video) throws Exception {
+  public Source refresh(String video) throws Exception {
+    return refresh(video, "explicit");
+  }
+
+  public synchronized Source refresh(String video, String reason) throws Exception {
+    LOG.info("event=MEDIA_SOURCE_REFRESH_STARTED video={} reason={}", video, reason);
     var settings = settingsService.values(false);
     String bin = settings.getOrDefault("yt_dlp_path", "yt-dlp");
     List<String> command = new ArrayList<>(List.of(bin, "-J", "--no-playlist"));
@@ -196,13 +214,16 @@ public class MediaSourceService {
     // their documented extractor arguments; it never executes a shell command.
     if (providerArgs != null && !providerArgs.isBlank()) command.addAll(List.of("--extractor-args", providerArgs));
     command.add("https://www.youtube.com/watch?v=" + URLEncoder.encode(video, StandardCharsets.UTF_8));
-    ProbeResult result = runProbe(command, bin);
+    ProbeResult result = runProbe(command, bin, video, reason);
     if (result.exitCode() != 0 && providerArgs != null && !providerArgs.isBlank()) {
       // Provider plugins are optional outside the Compose deployment. Retry
       // without this provider only; cookies/manual tokens remain intact.
       int index = command.lastIndexOf(providerArgs);
-      if (index > 0 && "--extractor-args".equals(command.get(index - 1))) { command.remove(index); command.remove(index - 1); }
-      result = runProbe(command, bin);
+      if (index > 0 && "--extractor-args".equals(command.get(index - 1))) {
+        LOG.warn("event=YTDLP_PROBE_RETRY_WITHOUT_PROVIDER video={} reason={}", video, reason);
+        command.remove(index); command.remove(index - 1);
+      }
+      result = runProbe(command, bin, video, reason);
     }
     if (result.exitCode() != 0) {
       String detail = probeError(result.stderr());
@@ -213,6 +234,9 @@ public class MediaSourceService {
     Source selected = select(root);
     persist(video, selected);
     sources.put(video, selected);
+    LOG.info("event=MEDIA_SOURCE_REFRESH_SUCCEEDED video={} reason={} format={} videoFormat={} audioFormat={} fragments={} durationSeconds={} progressive={} expiresAt={}",
+        video, reason, selected.format(), selected.videoFormat(), selected.audioFormat(), selected.fragments().size(),
+        selected.duration(), selected.progressive(), selected.expiresAt());
     return selected;
   }
 
@@ -224,20 +248,32 @@ public class MediaSourceService {
     return settings.getOrDefault("youtube_po_token_provider_args", DEFAULT_PO_TOKEN_PROVIDER_ARGS);
   }
 
-  private ProbeResult runProbe(List<String> command, String bin) throws Exception {
-    LOG.info("event=YTDLP_PROBE_STARTED command={}", displayCommand(command));
+  private ProbeResult runProbe(List<String> command, String bin, String video, String reason) throws Exception {
+    long started = System.nanoTime();
+    LOG.info("event=YTDLP_PROBE_STARTED video={} reason={} command={}", video, reason, displayCommand(command));
     Process process = startProbe(command, bin);
     CompletableFuture<byte[]> stdout = CompletableFuture.supplyAsync(() -> read(process.getInputStream()));
     CompletableFuture<byte[]> stderr = CompletableFuture.supplyAsync(() -> read(process.getErrorStream()));
     int exitCode = process.waitFor();
     byte[] output = stdout.join();
     byte[] error = stderr.join();
+    long durationMs = (System.nanoTime() - started) / 1_000_000;
     if (exitCode != 0) {
-      LOG.warn("event=YTDLP_PROBE_FAILED exitCode={} stderr={}", exitCode, probeError(error));
+      LOG.warn("event=YTDLP_PROBE_FAILED video={} reason={} exitCode={} durationMs={} stdoutBytes={} stderr={}",
+          video, reason, exitCode, durationMs, output.length, probeError(error));
     } else {
-      LOG.info("event=YTDLP_PROBE_SUCCEEDED");
+      LOG.info("event=YTDLP_PROBE_SUCCEEDED video={} reason={} durationMs={} stdoutBytes={} stderrBytes={}",
+          video, reason, durationMs, output.length, error.length);
     }
     return new ProbeResult(exitCode, output, error);
+  }
+
+  private static String formatOrNull(Source source) {
+    return source == null ? null : source.format();
+  }
+
+  private static Instant expiresAtOrNull(Source source) {
+    return source == null ? null : source.expiresAt();
   }
 
   private static String probeError(byte[] bytes) {
@@ -326,7 +362,8 @@ public class MediaSourceService {
         .filter(this::directPlayable).filter(c -> seekable(c) || isHls(c)).sorted(videoOrder).toList();
     List<Candidate> audios = all.stream().filter(c -> c.hasAudio() && !c.hasVideo())
         .filter(this::directPlayable).filter(c -> seekable(c) || isHls(c)).sorted(Comparator.comparingInt(Candidate::codecRank)
-            .thenComparingDouble(Candidate::bitrate).reversed()).toList();
+            .reversed().thenComparing(Comparator.comparingInt(MediaSourceService::audioLanguageRank).reversed())
+            .thenComparing(Comparator.comparingDouble(Candidate::bitrate).reversed())).toList();
     for (Candidate videoCandidate : videos) {
       Candidate video = withTimeline(videoCandidate);
       if (!seekable(video)) continue;
@@ -459,10 +496,19 @@ public class MediaSourceService {
   private static boolean likelyHlsAudio(JsonNode format) {
     if (!isHls(format)) return false;
     String id = format.path("format_id").asText("");
-    return switch (id) {
+    int suffix = id.indexOf('-');
+    String baseId = suffix < 0 ? id : id.substring(0, suffix);
+    return switch (baseId) {
       case "139", "140", "233", "234" -> true;
       default -> false;
     };
+  }
+
+  private static int audioLanguageRank(Candidate candidate) {
+    int preference = candidate.node().path("language_preference").asInt(-1);
+    if (preference >= 0) return preference;
+    String note = candidate.node().path("format_note").asText("").toLowerCase(Locale.ROOT);
+    return note.contains("original") || note.contains("default") ? 1 : 0;
   }
 
   private boolean directPlayable(Candidate c) {

@@ -23,6 +23,8 @@ public class YouTubeChannelEntity {
   @Column(name = "short_import_count") private Integer shortImportCount;
   @Column(name = "live_stream_import_count") private Integer liveStreamImportCount;
   @Column(name = "download_count") private Integer downloadCount;
+  @Column(name = "short_download_count") private Integer shortDownloadCount;
+  @Column(name = "live_stream_download_count") private Integer liveStreamDownloadCount;
   @Lob @Column(name = "sync_error") private String syncError;
   protected YouTubeChannelEntity() { }
   public YouTubeChannelEntity(String channelId, String name, String url, String updatedAt) {
@@ -41,6 +43,8 @@ public class YouTubeChannelEntity {
   public Integer getShortImportCount() { return shortImportCount; }
   public Integer getLiveStreamImportCount() { return liveStreamImportCount; }
   public Integer getDownloadCount() { return downloadCount; }
+  public Integer getShortDownloadCount() { return shortDownloadCount; }
+  public Integer getLiveStreamDownloadCount() { return liveStreamDownloadCount; }
   public String getSyncError() { return syncError; }
   public void setName(String name) { this.name = name; }
   public void setUrl(String url) { this.url = url; }
@@ -54,5 +58,7 @@ public class YouTubeChannelEntity {
   public void setShortImportCount(Integer value) { shortImportCount = value; }
   public void setLiveStreamImportCount(Integer value) { liveStreamImportCount = value; }
   public void setDownloadCount(Integer value) { downloadCount = value; }
+  public void setShortDownloadCount(Integer value) { shortDownloadCount = value; }
+  public void setLiveStreamDownloadCount(Integer value) { liveStreamDownloadCount = value; }
   public void setSyncError(String value) { syncError = value; }
 }

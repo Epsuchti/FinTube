@@ -19,13 +19,16 @@ public class SubscriptionScheduler {
   private final YouTubeSubscriptionRepository subscriptions;
   private final YouTubeSyncService sync;
   private final UserYouTubeApiKeyService youtubeApiKeys;
+  private final JellyfinSyncService jellyfin;
 
   SubscriptionScheduler(SettingsService settings, YouTubeSubscriptionRepository subscriptions,
-                        YouTubeSyncService sync, UserYouTubeApiKeyService youtubeApiKeys) {
+                        YouTubeSyncService sync, UserYouTubeApiKeyService youtubeApiKeys,
+                        JellyfinSyncService jellyfin) {
     this.settings = settings;
     this.subscriptions = subscriptions;
     this.sync = sync;
     this.youtubeApiKeys = youtubeApiKeys;
+    this.jellyfin = jellyfin;
   }
 
   @Scheduled(fixedDelayString = "PT15M")
@@ -33,17 +36,19 @@ public class SubscriptionScheduler {
     int minutes = syncIntervalMinutes();
     String cutoff = Instant.now().minusSeconds(minutes * 60L).toString();
     try {
-      Set<String> syncedChannels = new HashSet<>();
-      for (YouTubeSubscriptionRepository.DueSubscriptionView due : subscriptions.findDueSubscriptions(cutoff)) {
-        String channel = due.getChannelId();
-        if (syncedChannels.contains(channel)) continue;
-        if (!youtubeApiKeys.configured(due.getUserId())) continue;
-        try {
-          sync.syncChannel(channel, due.getUserId());
-          syncedChannels.add(channel);
-        } catch (Exception e) {
-          LOG.error("Scheduled subscription sync failed for channel={} userId={}", channel, due.getUserId(), e);
-          // A channel failure is isolated; the scheduler must remain alive.
+      try (JellyfinSyncService.RefreshBatch ignored = jellyfin.beginRefreshBatch()) {
+        Set<String> syncedChannels = new HashSet<>();
+        for (YouTubeSubscriptionRepository.DueSubscriptionView due : subscriptions.findDueSubscriptions(cutoff)) {
+          String channel = due.getChannelId();
+          if (syncedChannels.contains(channel)) continue;
+          if (!youtubeApiKeys.configured(due.getUserId())) continue;
+          try {
+            sync.syncChannel(channel, due.getUserId());
+            syncedChannels.add(channel);
+          } catch (Exception e) {
+            LOG.error("Scheduled subscription sync failed for channel={} userId={}", channel, due.getUserId(), e);
+            // A channel failure is isolated; the scheduler must remain alive.
+          }
         }
       }
     } catch (Exception e) {

@@ -1,0 +1,10 @@
+databaseChangeLog:
+  - changeSet:
+      id: 012-channel-download-categories
+      author: fintube
+      changes:
+        - addColumn:
+            tableName: youtube_channels
+            columns:
+              - column: {name: short_download_count, type: integer, defaultValueNumeric: 0}
+              - column: {name: live_stream_download_count, type: integer, defaultValueNumeric: 0}

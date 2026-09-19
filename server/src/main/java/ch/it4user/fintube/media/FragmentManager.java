@@ -26,6 +26,8 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Persistent fragment cache shared by playback and background filling.
@@ -34,6 +36,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 @Service
 public class FragmentManager {
+  private static final Logger LOG = LoggerFactory.getLogger(FragmentManager.class);
   /** Coordinates lease acquisition with maintenance's check-and-unlink step. */
   public static final Object EVICTION_LOCK = new Object();
   final ApplicationPaths paths;
@@ -92,7 +95,11 @@ public class FragmentManager {
     if (high) interactive.incrementAndGet();
     try {
       Path cached = cached(video, format, fragment);
-      if (cached != null) return cached;
+      if (cached != null) {
+        LOG.debug("event=MEDIA_FRAGMENT_CACHE_HIT video={} format={} fragment={} priority={}",
+            video, format, fragment, priority(high));
+        return cached;
+      }
       if (!high) {
         waitForInteractive();
         // A high-priority request may have completed while this filler was
@@ -125,12 +132,12 @@ public class FragmentManager {
         // waiting. The low worker already owns this single-flight entry, so it
         // is safe to finish it; the high request joins without duplication.
         Path tmpVideo = temporary(target);
-        download(videoSource, tmpVideo, high, created);
+        download(video, format, fragment, videoSource, tmpVideo, high, created, "video");
         Path tmpFinal = tmpVideo;
         if (audioSource != null) {
           Path tmpAudio = temporary(target);
           try {
-            download(audioSource, tmpAudio, high, created);
+            download(video, format, fragment, audioSource, tmpAudio, high, created, "audio");
             tmpFinal = remux(tmpVideo, tmpAudio, temporary(target), startSeconds);
           } finally {
             Files.deleteIfExists(tmpAudio);
@@ -241,16 +248,21 @@ public class FragmentManager {
     } catch (IOException ignored) { }
   }
 
-  private void download(URI source, Path target, boolean high, Inflight owner) throws Exception {
+  private void download(String video, String format, String fragment, URI source, Path target,
+                        boolean high, Inflight owner, String track) throws Exception {
     Exception failure = null;
     for (int attempt = 0; attempt < 4; attempt++) {
       try {
-        downloadOnce(source, target, high, owner);
+        downloadOnce(video, format, fragment, source, target, high, owner, track, attempt + 1);
         return;
       } catch (ExpiredSourceException e) {
+        LOG.warn("event=MEDIA_FRAGMENT_SOURCE_EXPIRED video={} format={} fragment={} track={} priority={} attempt={} statusCode={}",
+            video, format, fragment, track, priority(high), attempt + 1, e.statusCode());
         throw e;
       } catch (IOException | RetryableUpstreamException e) {
         failure = e;
+        LOG.warn("event=MEDIA_FRAGMENT_DOWNLOAD_RETRY video={} format={} fragment={} track={} priority={} attempt={} reason={}",
+            video, format, fragment, track, priority(high), attempt + 1, e.toString());
         Files.deleteIfExists(target);
         if (attempt == 3) break;
         Thread.sleep(250L << attempt);
@@ -259,15 +271,19 @@ public class FragmentManager {
     throw failure;
   }
 
-  private void downloadOnce(URI source, Path target, boolean high, Inflight owner) throws Exception {
+  private void downloadOnce(String video, String format, String fragment, URI source, Path target,
+                            boolean high, Inflight owner, String track, int attempt) throws Exception {
     if (source == null) throw new IllegalArgumentException("missing source URL");
+    long downloadStarted = System.nanoTime();
+    LOG.info("event=MEDIA_FRAGMENT_DOWNLOAD_STARTED video={} format={} fragment={} track={} priority={} attempt={} source={}",
+        video, format, fragment, track, priority(high), attempt, sourceEndpoint(source));
     HttpRequest request = HttpRequest.newBuilder(source).GET().build();
     // Read in bounded chunks instead of BodyHandlers.ofFile so a low-priority
     // transfer can yield between reads when unrelated playback is active.
     HttpResponse<InputStream> response = externalHttp.send(request, HttpResponse.BodyHandlers.ofInputStream());
     if (response.statusCode() == 401 || response.statusCode() == 403 || response.statusCode() == 410) {
       response.body().close();
-      throw new ExpiredSourceException();
+      throw new ExpiredSourceException(response.statusCode());
     }
     if (response.statusCode() == 408 || response.statusCode() == 429 || response.statusCode() >= 500) {
       response.body().close();
@@ -275,6 +291,8 @@ public class FragmentManager {
     }
     if (response.statusCode() < 200 || response.statusCode() > 299) {
       response.body().close();
+      LOG.warn("event=MEDIA_FRAGMENT_DOWNLOAD_FAILED video={} format={} fragment={} track={} priority={} attempt={} statusCode={}",
+          video, format, fragment, track, priority(high), attempt, response.statusCode());
       throw new IllegalStateException("upstream status " + response.statusCode());
     }
     long started = System.nanoTime();
@@ -293,6 +311,9 @@ public class FragmentManager {
     }
     if (bytes == 0 || !Files.isRegularFile(target) || Files.size(target) == 0)
       throw new IOException("empty upstream fragment");
+    LOG.info("event=MEDIA_FRAGMENT_DOWNLOAD_SUCCEEDED video={} format={} fragment={} track={} priority={} attempt={} statusCode={} bytes={} durationMs={}",
+        video, format, fragment, track, priority(high), attempt, response.statusCode(), bytes,
+        (System.nanoTime() - downloadStarted) / 1_000_000);
   }
 
   /** Wait while an unrelated interactive request is active. */
@@ -320,6 +341,7 @@ public class FragmentManager {
 
   private Path remux(Path video, Path audio, Path output, double expectedStart) throws Exception {
     String ffmpeg = setting("ffmpeg_path", "ffmpeg");
+    LOG.info("event=MEDIA_FRAGMENT_REMUX_STARTED expectedStartSeconds={} ffmpeg={}", expectedStart, ffmpeg);
     Double videoStart = streamStart(video, ffmpeg);
     Double audioStart = streamStart(audio, ffmpeg);
     var command = new java.util.ArrayList<String>();
@@ -340,6 +362,7 @@ public class FragmentManager {
     byte[] outputLog = process.getInputStream().readAllBytes();
     if (process.waitFor() != 0 || !Files.isRegularFile(output) || Files.size(output) == 0)
       throw new IOException("stream-copy remux failed" + (outputLog.length == 0 ? "" : ": " + new String(outputLog)));
+    LOG.info("event=MEDIA_FRAGMENT_REMUX_SUCCEEDED bytes={} expectedStartSeconds={}", Files.size(output), expectedStart);
     return output;
   }
 
@@ -446,9 +469,30 @@ public class FragmentManager {
     return java.time.Instant.now().toString();
   }
 
+  private static String priority(boolean high) {
+    return high ? "interactive" : "background";
+  }
+
+  private static String sourceEndpoint(URI source) {
+    if (source == null) return "<missing>";
+    String host = source.getHost();
+    String path = source.getRawPath();
+    if (host == null || host.isBlank()) return source.getScheme() + ":" + (path == null ? "" : path);
+    String port = source.getPort() < 0 ? "" : ":" + source.getPort();
+    return source.getScheme() + "://" + host + port + (path == null ? "" : path);
+  }
+
   private static String key(String video, String format, String fragment) { return video + "/" + format + "/" + fragment; }
   static String safe(String value) { return value.replaceAll("[^A-Za-z0-9._-]", "_"); }
-  public static class ExpiredSourceException extends Exception { }
+  public static class ExpiredSourceException extends Exception {
+    private final int statusCode;
+
+    ExpiredSourceException(int statusCode) {
+      this.statusCode = statusCode;
+    }
+
+    int statusCode() { return statusCode; }
+  }
   private static final class RetryableUpstreamException extends Exception {
     RetryableUpstreamException(int status) { super("temporary upstream status " + status); }
   }

@@ -11,6 +11,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Coordinates the asynchronous Jellyfin scan/runtime updates caused by
@@ -20,6 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 @Service
 public class JellyfinSyncService {
+  private static final Logger LOG = LoggerFactory.getLogger(JellyfinSyncService.class);
   final JellyfinClient client;
   final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2, r -> {
     Thread t = new Thread(r, "fintube-jellyfin-sync");
@@ -27,6 +31,8 @@ public class JellyfinSyncService {
     return t;
   });
   final AtomicBoolean refreshQueued = new AtomicBoolean();
+  final AtomicInteger refreshBatchDepth = new AtomicInteger();
+  final AtomicBoolean refreshPending = new AtomicBoolean();
   final ConcurrentHashMap<String, Pending> pending = new ConcurrentHashMap<>();
 
   volatile String lastRefreshAt;
@@ -43,11 +49,38 @@ public class JellyfinSyncService {
 
   private record Pending(String videoId, Path libraryPath, long durationSeconds, int attempt) {}
 
+  public RefreshBatch beginRefreshBatch() {
+    int depth = refreshBatchDepth.incrementAndGet();
+    LOG.debug("event=JELLYFIN_REFRESH_BATCH_STARTED depth={}", depth);
+    return new RefreshBatch();
+  }
+
+  public final class RefreshBatch implements AutoCloseable {
+    private boolean closed;
+
+    @Override
+    public void close() {
+      if (closed) return;
+      closed = true;
+      int depth = refreshBatchDepth.decrementAndGet();
+      if (depth < 0) {
+        refreshBatchDepth.set(0);
+        throw new IllegalStateException("Jellyfin refresh batch closed without being opened");
+      }
+      boolean pendingRefresh = depth == 0 && refreshPending.compareAndSet(true, false);
+      LOG.debug("event=JELLYFIN_REFRESH_BATCH_FINISHED depth={} pendingRefresh={}", depth, pendingRefresh);
+      if (pendingRefresh) queueRefresh();
+    }
+  }
+
   /** Called after a user's .strm/.nfo/artwork files have been atomically created. */
   public void afterLibraryGeneration(String videoId, Path libraryPath, long durationSeconds) {
     JellyfinClient.Configuration c = client.configuration();
     if (!c.enabled() || !c.configured()) return;
-    queueRefresh(c.autoRefresh());
+    if (c.autoRefresh()) {
+      if (refreshBatchDepth.get() > 0) refreshPending.set(true);
+      else queueRefresh();
+    }
     if (c.runtimeSync()) {
       pending.put(pendingKey(videoId, libraryPath), new Pending(videoId, libraryPath, durationSeconds, 0));
       scheduleRuntime(videoId, libraryPath, durationSeconds, 0, 2);
@@ -55,8 +88,10 @@ public class JellyfinSyncService {
   }
 
   /** Queue one coalesced scan for all files generated in the current batch. */
-  private void queueRefresh(boolean enabled) {
-    if (!enabled || !refreshQueued.compareAndSet(false, true)) return;
+  private void queueRefresh() {
+    JellyfinClient.Configuration c = client.configuration();
+    if (!c.enabled() || !c.configured() || !c.autoRefresh() || !refreshQueued.compareAndSet(false, true)) return;
+    LOG.info("event=JELLYFIN_LIBRARY_REFRESH_SCHEDULED delayMs=250");
     executor.schedule(() -> {
       try {
         JellyfinClient.Operation result = client.refreshLibraries();
@@ -64,6 +99,8 @@ public class JellyfinSyncService {
         lastRefreshSuccess = result.success();
         lastRefreshMessage = result.message();
         refreshCount++;
+        LOG.info("event=JELLYFIN_LIBRARY_REFRESH_COMPLETED success={} statusCode={} message={} count={}",
+            result.success(), result.statusCode(), result.message(), refreshCount);
       } finally {
         refreshQueued.set(false);
       }

@@ -45,7 +45,7 @@ public class PlaybackService {
             String resolvedToken = resolveToken(video, token, request);
             valid(video, resolvedToken);
             var source = sources.source(video);
-            filler.enqueue(video);
+            filler.enqueue(video, "playback_manifest");
             StringBuilder output = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-PLAYLIST-TYPE:VOD\n");
             output.append("#EXT-X-TARGETDURATION:").append(source.targetDuration()).append("\n#EXT-X-MEDIA-SEQUENCE:0\n");
             for (var fragment : source.fragments()) {
@@ -79,7 +79,9 @@ public class PlaybackService {
                 path = fragments.get(video, source.format(), resolvedFragmentId, sourceFragment.url(), sourceFragment.audioUrl(), sourceFragment.startSeconds(), true);
                 stream = fragments.open(video, source.format(), resolvedFragmentId, sourceFragment.url(), sourceFragment.audioUrl(), sourceFragment.startSeconds(), true);
             } catch (FragmentManager.ExpiredSourceException e) {
-                source = sources.refresh(video);
+                LOG.warn("event=PLAYBACK_SOURCE_REFRESH_REQUIRED video={} fragment={} reason=upstream_source_expired",
+                    video, resolvedFragmentId);
+                source = sources.refresh(video, "playback_fragment_source_expired");
                 var refreshed = source.fragments().stream().filter(item -> item.id().equals(resolvedFragmentId)).findFirst()
                         .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_GATEWAY));
                 path = fragments.get(video, source.format(), resolvedFragmentId, refreshed.url(), refreshed.audioUrl(), refreshed.startSeconds(), true);

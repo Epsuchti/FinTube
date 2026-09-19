@@ -34,6 +34,8 @@ export class SubscriptionsPageComponent implements OnInit {
     readonly shortImportCounts = signal<Record<number, number>>({});
     readonly liveStreamImportCounts = signal<Record<number, number>>({});
     readonly downloadCounts = signal<Record<number, number>>({});
+    readonly shortDownloadCounts = signal<Record<number, number>>({});
+    readonly liveStreamDownloadCounts = signal<Record<number, number>>({});
     readonly editingId = signal<number | null>(null);
     readonly cookieImportOpen = signal(false);
     readonly cookieImport = signal<CookieImportFile | null>(null);
@@ -157,7 +159,9 @@ export class SubscriptionsPageComponent implements OnInit {
                 initial_import_count: values.initialImportCount,
                 short_import_count: values.shortImportCount,
                 live_stream_import_count: values.liveStreamImportCount,
-                download_count: values.downloadCount
+                download_count: values.downloadCount,
+                short_download_count: values.shortDownloadCount,
+                live_stream_download_count: values.liveStreamDownloadCount
             }
         }).subscribe({
             next: () => {
@@ -231,7 +235,9 @@ export class SubscriptionsPageComponent implements OnInit {
                 initial_import_count: values.initialImportCount,
                 short_import_count: values.shortImportCount,
                 live_stream_import_count: values.liveStreamImportCount,
-                download_count: values.downloadCount
+                download_count: values.downloadCount,
+                short_download_count: values.shortDownloadCount,
+                live_stream_download_count: values.liveStreamDownloadCount
             }
         }).pipe(switchMap(() => this.libraryApi.refreshSubscription({id: subscription.id}))).subscribe({
             next: result => {
@@ -305,6 +311,22 @@ export class SubscriptionsPageComponent implements OnInit {
         this.downloadCounts.update(current => ({...current, [subscription.id]: count}));
     }
 
+    shortDownloadCount(subscription: Subscription): number {
+        return this.shortDownloadCounts()[subscription.id] ?? subscription.short_download_count;
+    }
+
+    setShortDownloadCount(subscription: Subscription, value: string | number): void {
+        this.shortDownloadCounts.update(current => ({...current, [subscription.id]: Number(value)}));
+    }
+
+    liveStreamDownloadCount(subscription: Subscription): number {
+        return this.liveStreamDownloadCounts()[subscription.id] ?? subscription.live_stream_download_count;
+    }
+
+    setLiveStreamDownloadCount(subscription: Subscription, value: string | number): void {
+        this.liveStreamDownloadCounts.update(current => ({...current, [subscription.id]: Number(value)}));
+    }
+
     private loadSubscriptions(): void {
         this.loading.set(true);
         this.libraryApi.listSubscriptions().subscribe({
@@ -314,6 +336,8 @@ export class SubscriptionsPageComponent implements OnInit {
                 this.shortImportCounts.set(Object.fromEntries(rows.map(row => [row.id, row.short_import_count])));
                 this.liveStreamImportCounts.set(Object.fromEntries(rows.map(row => [row.id, row.live_stream_import_count])));
                 this.downloadCounts.set(Object.fromEntries(rows.map(row => [row.id, row.download_count])));
+                this.shortDownloadCounts.set(Object.fromEntries(rows.map(row => [row.id, row.short_download_count])));
+                this.liveStreamDownloadCounts.set(Object.fromEntries(rows.map(row => [row.id, row.live_stream_download_count])));
                 if (!rows.some(row => row.id === this.editingId())) this.editingId.set(null);
                 this.loading.set(false);
             },
@@ -339,7 +363,7 @@ export class SubscriptionsPageComponent implements OnInit {
         return fallback;
     }
 
-    private subscriptionSettings(subscription: Subscription): {initialImportCount: number; shortImportCount: number; liveStreamImportCount: number; downloadCount: number} | null {
+    private subscriptionSettings(subscription: Subscription): {initialImportCount: number; shortImportCount: number; liveStreamImportCount: number; downloadCount: number; shortDownloadCount: number; liveStreamDownloadCount: number} | null {
         const initialImportCount = this.importCount(subscription);
         const shortImportCount = this.shortImportCount(subscription);
         const liveStreamImportCount = this.liveStreamImportCount(subscription);
@@ -348,11 +372,13 @@ export class SubscriptionsPageComponent implements OnInit {
             return null;
         }
         const downloadCount = this.downloadCount(subscription);
-        if (!Number.isInteger(downloadCount) || downloadCount < 0 || downloadCount > 1000) {
-            this.error.set('Download count must be between 0 and 1000.');
+        const shortDownloadCount = this.shortDownloadCount(subscription);
+        const liveStreamDownloadCount = this.liveStreamDownloadCount(subscription);
+        if (![downloadCount, shortDownloadCount, liveStreamDownloadCount].every(value => Number.isInteger(value) && value >= 0 && value <= 1000)) {
+            this.error.set('Download counts must be between 0 and 1000.');
             return null;
         }
-        return {initialImportCount, shortImportCount, liveStreamImportCount, downloadCount};
+        return {initialImportCount, shortImportCount, liveStreamImportCount, downloadCount, shortDownloadCount, liveStreamDownloadCount};
     }
 
     private looksLikeNetscapeCookieFile(value: string): boolean {

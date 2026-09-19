@@ -1,0 +1,9 @@
+databaseChangeLog:
+  - changeSet:
+      id: 013-video-live-category
+      author: fintube
+      changes:
+        - addColumn:
+            tableName: videos
+            columns:
+              - column: {name: is_live_stream, type: integer, defaultValueNumeric: 0}

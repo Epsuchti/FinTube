@@ -11,6 +11,7 @@ import ch.it4user.fintube.core.AuditLogger;
 import ch.it4user.fintube.core.ApplicationClock;
 import ch.it4user.fintube.core.ApplicationPaths;
 import ch.it4user.fintube.core.SettingsService;
+import ch.it4user.fintube.integration.JellyfinSyncService;
 import ch.it4user.fintube.integration.YouTubeSyncService;
 import ch.it4user.fintube.media.ProxiedHttpClient;
 import ch.it4user.fintube.persistence.entities.UserVideoEntity;
@@ -72,6 +73,7 @@ public class LibraryApplicationService {
     private final LibraryVideoRepository videos;
     private final AuthorizationService authorization;
     private final YouTubeSyncService sync;
+    private final JellyfinSyncService jellyfin;
     private final UserYouTubeApiKeyService youtubeApiKeys;
     private final AuditLogger audit;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -85,6 +87,7 @@ public class LibraryApplicationService {
                                      LibraryVideoRepository videos,
                                      AuthorizationService authorization,
                                      YouTubeSyncService sync,
+                                     JellyfinSyncService jellyfin,
                                      AuditLogger audit,
                                      UserYouTubeApiKeyService youtubeApiKeys,
                                      ProxiedHttpClient externalHttp) {
@@ -96,6 +99,7 @@ public class LibraryApplicationService {
         this.videos = videos;
         this.authorization = authorization;
         this.sync = sync;
+        this.jellyfin = jellyfin;
         this.audit = audit;
         this.youtubeApiKeys = youtubeApiKeys;
         this.externalHttp = externalHttp;
@@ -175,6 +179,8 @@ public class LibraryApplicationService {
             Integer shortImportCount = requestBody.getShortImportCount();
             Integer liveStreamImportCount = requestBody.getLiveStreamImportCount();
             Integer downloadCount = requestBody.getDownloadCount();
+            Integer shortDownloadCount = requestBody.getShortDownloadCount();
+            Integer liveStreamDownloadCount = requestBody.getLiveStreamDownloadCount();
             YouTubeChannelEntity channel = channels.findById(subscription.getChannelId())
                     .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
             if (initialImportCount != null) {
@@ -193,10 +199,16 @@ public class LibraryApplicationService {
                 channel.setLastSyncPublishedAt(null);
             }
             if (downloadCount != null) {
-                if (downloadCount < 0 || downloadCount > 1000) {
-                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "download count must be between 0 and 1000");
-                }
+                validateDownloadCount(downloadCount, "download count");
                 channel.setDownloadCount(downloadCount);
+            }
+            if (shortDownloadCount != null) {
+                validateDownloadCount(shortDownloadCount, "Shorts download count");
+                channel.setShortDownloadCount(shortDownloadCount);
+            }
+            if (liveStreamDownloadCount != null) {
+                validateDownloadCount(liveStreamDownloadCount, "live stream download count");
+                channel.setLiveStreamDownloadCount(liveStreamDownloadCount);
             }
             channels.save(channel);
             subscriptions.save(subscription);
@@ -208,6 +220,8 @@ public class LibraryApplicationService {
             if (shortImportCount != null) auditFields.put("shortImportCount", shortImportCount);
             if (liveStreamImportCount != null) auditFields.put("liveStreamImportCount", liveStreamImportCount);
             if (downloadCount != null) auditFields.put("downloadCount", downloadCount);
+            if (shortDownloadCount != null) auditFields.put("shortDownloadCount", shortDownloadCount);
+            if (liveStreamDownloadCount != null) auditFields.put("liveStreamDownloadCount", liveStreamDownloadCount);
             audit.event("SUBSCRIPTION_UPDATED", auditFields);
             return null;
         });
@@ -248,14 +262,16 @@ public class LibraryApplicationService {
             AuthService.Principal principal = authorization.requireUser(request);
             requireYouTubeApiKey(principal.id());
             int discovered = 0;
-            for (YouTubeSubscriptionEntity subscription : subscriptions.findByUserIdAndEnabled(principal.id(), 1)) {
-                try {
-                    discovered += sync.sync(subscription.getChannelId(), principal.id());
-                } catch (Exception e) {
-                    LOG.error("Subscription refresh failed for subscriptionId={} channelId={}",
-                            subscription.getId(), subscription.getChannelId(), e);
-                    throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
-                            "refresh all failed for channel " + subscription.getChannelId(), e);
+            try (JellyfinSyncService.RefreshBatch ignored = jellyfin.beginRefreshBatch()) {
+                for (YouTubeSubscriptionEntity subscription : subscriptions.findByUserIdAndEnabled(principal.id(), 1)) {
+                    try {
+                        discovered += sync.sync(subscription.getChannelId(), principal.id());
+                    } catch (Exception e) {
+                        LOG.error("Subscription refresh failed for subscriptionId={} channelId={}",
+                                subscription.getId(), subscription.getChannelId(), e);
+                        throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                                "refresh all failed for channel " + subscription.getChannelId(), e);
+                    }
                 }
             }
             audit.event("SUBSCRIPTIONS_REFRESH_ALL_COMPLETED",
@@ -295,7 +311,9 @@ public class LibraryApplicationService {
         int shortImportCount = value.getShortImportCount() == null ? 0 : value.getShortImportCount();
         int liveStreamImportCount = value.getLiveStreamImportCount() == null ? 0 : value.getLiveStreamImportCount();
         int downloadCount = value.getDownloadCount() == null ? 0 : value.getDownloadCount();
-        return new Subscription(value.getId(), value.getChannelId(), value.getName(), booleanValue(value.getEnabled()), importCount, shortImportCount, liveStreamImportCount, downloadCount)
+        int shortDownloadCount = value.getShortDownloadCount() == null ? 0 : value.getShortDownloadCount();
+        int liveStreamDownloadCount = value.getLiveStreamDownloadCount() == null ? 0 : value.getLiveStreamDownloadCount();
+        return new Subscription(value.getId(), value.getChannelId(), value.getName(), booleanValue(value.getEnabled()), importCount, shortImportCount, liveStreamImportCount, downloadCount, shortDownloadCount, liveStreamDownloadCount)
                 .url(value.getUrl())
                 .lastCheckedAt(value.getLastCheckedAt())
                 .lastSuccessfulSyncAt(value.getLastSuccessfulSyncAt());
@@ -338,6 +356,8 @@ public class LibraryApplicationService {
         if (canonical.getShortImportCount() == null) canonical.setShortImportCount(initialShortImportCount());
         if (canonical.getLiveStreamImportCount() == null) canonical.setLiveStreamImportCount(initialLiveStreamImportCount());
         if (canonical.getDownloadCount() == null) canonical.setDownloadCount(0);
+        if (canonical.getShortDownloadCount() == null) canonical.setShortDownloadCount(0);
+        if (canonical.getLiveStreamDownloadCount() == null) canonical.setLiveStreamDownloadCount(0);
         channels.save(canonical);
         if (subscriptions.findByUserIdAndChannelId(userId, channel.id()).isPresent()) return false;
         subscriptions.save(new YouTubeSubscriptionEntity(userId, channel.id(), 1, ApplicationClock.now()));
@@ -345,6 +365,12 @@ public class LibraryApplicationService {
     }
 
     private void validateImportCount(int value, String label) {
+        if (value < 0 || value > 1000) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, label + " must be between 0 and 1000");
+        }
+    }
+
+    private void validateDownloadCount(int value, String label) {
         if (value < 0 || value > 1000) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, label + " must be between 0 and 1000");
         }

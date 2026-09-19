@@ -10,7 +10,7 @@ import org.springframework.data.repository.query.Param;
 
 public interface YouTubeSubscriptionRepository extends JpaRepository<YouTubeSubscriptionEntity, Long> {
   interface UserSubscriptionView {
-    Long getId(); String getChannelId(); String getName(); String getUrl(); Integer getEnabled(); Integer getInitialImportCount(); Integer getShortImportCount(); Integer getLiveStreamImportCount(); Integer getDownloadCount();
+    Long getId(); String getChannelId(); String getName(); String getUrl(); Integer getEnabled(); Integer getInitialImportCount(); Integer getShortImportCount(); Integer getLiveStreamImportCount(); Integer getDownloadCount(); Integer getShortDownloadCount(); Integer getLiveStreamDownloadCount();
     String getLastCheckedAt(); String getLastSuccessfulSyncAt();
   }
   interface DueSubscriptionView {
@@ -23,7 +23,9 @@ public interface YouTubeSubscriptionRepository extends JpaRepository<YouTubeSubs
              c.initial_import_count AS initialImportCount,
              c.short_import_count AS shortImportCount,
              c.live_stream_import_count AS liveStreamImportCount,
-             c.download_count AS downloadCount
+             c.download_count AS downloadCount,
+             c.short_download_count AS shortDownloadCount,
+             c.live_stream_download_count AS liveStreamDownloadCount
         FROM youtube_subscriptions s JOIN youtube_channels c ON c.channel_id = s.channel_id
        WHERE s.user_id = :userId ORDER BY c.name
       """, nativeQuery = true)

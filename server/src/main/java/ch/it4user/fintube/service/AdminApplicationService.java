@@ -19,6 +19,7 @@ import ch.it4user.fintube.persistence.entities.JobEntity;
 import ch.it4user.fintube.persistence.repositories.JobRepository;
 import ch.it4user.fintube.persistence.entities.UserEntity;
 import ch.it4user.fintube.persistence.repositories.UserRepository;
+import ch.it4user.fintube.persistence.repositories.VideoRepository;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -38,6 +39,7 @@ public class AdminApplicationService {
     private final UserRepository users;
     private final CacheEntryRepository cacheEntries;
     private final CachedFragmentRepository cachedFragments;
+    private final VideoRepository videos;
     private final JobRepository jobs;
     private final AuthorizationService authorization;
     private final BackgroundFillService filler;
@@ -47,6 +49,7 @@ public class AdminApplicationService {
     public AdminApplicationService(SettingsService settings, UserRepository users,
                                    CacheEntryRepository cacheEntries,
                                    CachedFragmentRepository cachedFragments,
+                                   VideoRepository videos,
                                    JobRepository jobs,
                                    AuthorizationService authorization,
                                    BackgroundFillService filler,
@@ -56,6 +59,7 @@ public class AdminApplicationService {
         this.users = users;
         this.cacheEntries = cacheEntries;
         this.cachedFragments = cachedFragments;
+        this.videos = videos;
         this.jobs = jobs;
         this.authorization = authorization;
         this.filler = filler;
@@ -113,7 +117,11 @@ public class AdminApplicationService {
     public List<CacheEntry> cache(HttpServletRequest request) {
         return database(() -> {
             authorization.requireAdmin(request);
-            return cacheEntries.findAll(Sort.by(Sort.Direction.ASC, "lastAccessedAt")).stream().map(AdminApplicationService::cacheEntry).toList();
+            List<CacheEntryEntity> entries = cacheEntries.findAll(Sort.by(Sort.Direction.ASC, "lastAccessedAt"));
+            Map<String, VideoRepository.CacheMetadataView> metadata = entries.isEmpty() ? Map.of()
+                    : videos.findCacheMetadataByVideoIds(entries.stream().map(CacheEntryEntity::getVideoId).toList()).stream()
+                    .collect(java.util.stream.Collectors.toMap(VideoRepository.CacheMetadataView::getVideoId, value -> value));
+            return entries.stream().map(value -> cacheEntry(value, metadata.get(value.getVideoId()))).toList();
         });
     }
 
@@ -188,12 +196,14 @@ public class AdminApplicationService {
                 value.getFilesystemSlug(), null).email(value.getEmail());
     }
 
-    private static CacheEntry cacheEntry(CacheEntryEntity value) {
-        return new CacheEntry(value.getVideoId(), value.getStatus())
+    private static CacheEntry cacheEntry(CacheEntryEntity value, VideoRepository.CacheMetadataView metadata) {
+        CacheEntry result = new CacheEntry(value.getVideoId(), value.getStatus())
                 .formatKey(value.getFormatKey())
                 .lastAccessedAt(value.getLastAccessedAt())
                 .activeReaders(value.getActiveReaders())
                 .activeWriters(value.getActiveWriters());
+        if (metadata == null) return result;
+        return result.videoTitle(metadata.getVideoTitle()).channelName(metadata.getChannelName());
     }
 
     private static Job job(JobEntity value) {

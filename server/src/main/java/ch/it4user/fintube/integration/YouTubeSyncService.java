@@ -20,6 +20,8 @@ import ch.it4user.fintube.service.UserYouTubeApiKeyService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.data.domain.PageRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -54,6 +56,7 @@ import java.util.regex.Pattern;
  */
 @Service
 public class YouTubeSyncService {
+  private static final Logger LOG = LoggerFactory.getLogger(YouTubeSyncService.class);
   private static final Pattern ISO_DURATION =
       Pattern.compile("PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?");
   private static final int MAX_INCREMENTAL_PAGES = 20;
@@ -93,9 +96,11 @@ public class YouTubeSyncService {
 
   /** Synchronize once, then ensure the requested user's known videos are linked. */
   public int sync(String channel, long userId) throws Exception {
-    int discovered = syncChannel(channel, userId);
-    linkExistingVideos(channel, userId);
-    return discovered;
+    try (JellyfinSyncService.RefreshBatch ignored = jellyfin.beginRefreshBatch()) {
+      int discovered = syncChannel(channel, userId);
+      linkExistingVideos(channel, userId);
+      return discovered;
+    }
   }
 
   /**
@@ -178,16 +183,31 @@ public class YouTubeSyncService {
 
   /** Enqueue globally shared, low-priority cache fills for a channel's latest X videos. */
   private void prefetchNewest(String channel) {
-    int limit = channels.findById(channel).map(YouTubeChannelEntity::getDownloadCount)
-        .map(value -> Math.max(0, Math.min(1000, value))).orElse(0);
-    if (limit == 0) return;
+    YouTubeChannelEntity channelEntity = channels.findById(channel).orElse(null);
+    if (channelEntity == null) return;
+    int videoLimit = bounded(channelEntity.getDownloadCount());
+    int shortLimit = bounded(channelEntity.getShortDownloadCount());
+    int liveStreamLimit = bounded(channelEntity.getLiveStreamDownloadCount());
+    if (videoLimit == 0 && shortLimit == 0 && liveStreamLimit == 0) return;
     try {
-      videos.findByChannelIdAndAvailabilityOrderByPublishedAtDesc(
-          channel, "AVAILABLE", PageRequest.of(0, limit))
-          .forEach(video -> filler.enqueue(video.getVideoId()));
+      List<VideoEntity> videosToPrefetch = prefetchCategory(channel, videoLimit, 0, 0);
+      List<VideoEntity> shortsToPrefetch = prefetchCategory(channel, shortLimit, 1, 0);
+      List<VideoEntity> liveStreamsToPrefetch = prefetchCategory(channel, liveStreamLimit, 0, 1);
+      LOG.info("event=YOUTUBE_PREFETCH_REQUESTED channel={} videoLimit={} shortLimit={} liveStreamLimit={} videos={} shorts={} liveStreams={}",
+          channel, videoLimit, shortLimit, liveStreamLimit, videosToPrefetch.size(), shortsToPrefetch.size(), liveStreamsToPrefetch.size());
+      videosToPrefetch.forEach(video -> filler.enqueue(video.getVideoId(), "youtube_prefetch_video"));
+      shortsToPrefetch.forEach(video -> filler.enqueue(video.getVideoId(), "youtube_prefetch_short"));
+      liveStreamsToPrefetch.forEach(video -> filler.enqueue(video.getVideoId(), "youtube_prefetch_live_stream"));
     } catch (Exception ignored) {
       // Prefetch must never fail metadata synchronization or interactive playback.
+      LOG.warn("event=YOUTUBE_PREFETCH_FAILED channel={} reason={}", channel, ignored.toString(), ignored);
     }
+  }
+
+  private List<VideoEntity> prefetchCategory(String channel, int limit, int isShort, int isLiveStream) {
+    if (limit == 0) return List.of();
+    return videos.findByChannelIdAndAvailabilityAndIsShortAndIsLiveStreamOrderByPublishedAtDesc(
+        channel, "AVAILABLE", isShort, isLiveStream, PageRequest.of(0, limit));
   }
 
   /**
@@ -417,6 +437,7 @@ public class YouTubeSyncService {
     entity.setPublishedAt(snippet.path("publishedAt").asText(""));
     entity.setDurationSeconds(duration);
     entity.setIsShort(isShort(video, duration) ? 1 : 0);
+    entity.setIsLiveStream(isPastLiveStream(video) ? 1 : 0);
     entity.setThumbnailUrl(thumbnail(snippet));
     entity.setAvailability(availability);
     entity.setMetadataUpdatedAt(now());

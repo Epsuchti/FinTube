@@ -19,3 +19,7 @@ databaseChangeLog:
       file: db/changelog/010-user-youtube-api-key.yaml
   - include:
       file: db/changelog/011-remove-global-youtube-api-key.yaml
+  - include:
+      file: db/changelog/012-channel-download-categories.yaml
+  - include:
+      file: db/changelog/013-video-live-category.yaml
