@@ -1,0 +1,7 @@
+databaseChangeLog:
+  - changeSet:
+      id: 016-shorts-three-minute-limit
+      author: fintube
+      changes:
+        - sql:
+            sql: UPDATE videos SET is_short = 1 WHERE duration_seconds > 0 AND duration_seconds <= 180

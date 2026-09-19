@@ -27,3 +27,5 @@ databaseChangeLog:
       file: db/changelog/014-playback-background-fill-setting.yaml
   - include:
       file: db/changelog/015-default-playback-background-fill-disabled.yaml
+  - include:
+      file: db/changelog/016-shorts-three-minute-limit.yaml

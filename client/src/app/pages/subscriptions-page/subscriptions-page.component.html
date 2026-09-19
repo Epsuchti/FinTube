@@ -5,9 +5,6 @@
     <p class="muted">Only your subscriptions and their videos appear in this workspace.</p>
   </div>
   <div class="heading-actions">
-    <div class="channel-search">
-      <form class="inline-form channel-search-form" (ngSubmit)="searchSubscriptions()"><input name="searchQuery" [(ngModel)]="searchQuery" placeholder="Search subscriptions"><button type="submit" [disabled]="loading()">Search</button></form>
-    </div>
     <button type="button" (click)="toggleCookieImport()" [attr.aria-expanded]="cookieImportOpen()">Import from YouTube</button>
     <button type="button" (click)="refreshAllSubscriptions()" [disabled]="loading() || !hasEnabledSubscriptions()">Sync all</button>
     <span class="count-pill">{{ subscriptions().length }} channels</span>
@@ -49,6 +46,17 @@
     <p class="muted">Use a YouTube channel URL, channel ID, or @handle.</p>
   </div>
   <form class="inline-form" (ngSubmit)="addSubscription()"><input name="channel" [(ngModel)]="channel" placeholder="https://youtube.com/@ExampleChannel"><button class="primary" type="submit" [disabled]="loading()">Add channel</button></form>
+</section>
+
+<section class="subscription-toolbar panel">
+  <form class="subscription-search" (ngSubmit)="searchSubscriptions()">
+    <label for="subscriptionSearch">Search subscriptions</label>
+    <div class="search-input-row">
+      <input id="subscriptionSearch" name="searchQuery" type="search" [(ngModel)]="searchQuery" placeholder="Search by channel name, ID, or URL" aria-label="Search by channel name, ID, or URL">
+      <button class="primary" type="submit" [disabled]="loading()">Search</button>
+    </div>
+  </form>
+  <div class="toolbar-summary"><strong>{{ filteredSubscriptions().length }}</strong><span>{{ appliedSearch() ? 'matching channels' : 'channels' }}</span></div>
 </section>
 
 @if (loading()) {<div class="loading-state subscription-loading" role="status"><span class="spinner" aria-hidden="true"></span><span>{{ subscriptions().length ? 'Updating subscriptions…' : 'Loading subscriptions…' }}</span></div>}

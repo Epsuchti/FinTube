@@ -59,6 +59,7 @@ public class YouTubeSyncService {
   private static final Logger LOG = LoggerFactory.getLogger(YouTubeSyncService.class);
   private static final Pattern ISO_DURATION =
       Pattern.compile("PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?");
+  private static final int MAX_SHORT_DURATION_SECONDS = 180;
   private static final int MAX_INCREMENTAL_PAGES = 20;
 
   final SettingsService settings;
@@ -566,8 +567,8 @@ public class YouTubeSyncService {
     return "AVAILABLE";
   }
 
-  private static boolean isShort(JsonNode video, int seconds) {
-    if (seconds > 0 && seconds <= 60) return true;
+  static boolean isShort(JsonNode video, int seconds) {
+    if (seconds > 0 && seconds <= MAX_SHORT_DURATION_SECONDS) return true;
     JsonNode snippet = video.path("snippet");
     if (containsShorts(snippet.path("title").asText()) || containsShorts(snippet.path("description").asText())) return true;
     for (JsonNode tag : snippet.path("tags")) if (containsShorts(tag.asText())) return true;
