@@ -1,7 +1,6 @@
-import {ChangeDetectionStrategy, Component, ElementRef, EventEmitter, OnDestroy, OnInit, Output, ViewChild, inject, signal} from '@angular/core';
+import {ChangeDetectionStrategy, Component, EventEmitter, OnInit, Output, inject, signal} from '@angular/core';
 import {CommonModule, DatePipe} from '@angular/common';
-import {HttpClient, HttpErrorResponse} from '@angular/common/http';
-import Hls from 'hls.js';
+import {HttpErrorResponse} from '@angular/common/http';
 import {LibraryService, Video} from '../../api';
 
 @Component({
@@ -11,19 +10,19 @@ import {LibraryService, Video} from '../../api';
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './videos-page.component.html'
 })
-export class VideosPageComponent implements OnDestroy, OnInit {
+export class VideosPageComponent implements OnInit {
     private readonly libraryApi = inject(LibraryService);
-    private readonly http = inject(HttpClient);
-    private hls?: Hls;
-    @ViewChild('player') private player?: ElementRef<HTMLVideoElement>;
 
     readonly videos = signal<Video[]>([]);
     readonly loading = signal(false);
     readonly error = signal('');
     readonly notice = signal('');
-    readonly playbackError = signal('');
-    readonly playingVideoId = signal<string | null>(null);
-    @Output() manageChannels = new EventEmitter<void>();
+    readonly searchQuery = signal('');
+    readonly currentPage = signal(1);
+    readonly pageSize = 100;
+    readonly totalVideos = signal(0);
+    readonly totalPages = signal(0);
+    private requestSequence = 0;
     @Output() videoCountChange = new EventEmitter<number>();
 
     ngOnInit(): void {
@@ -38,83 +37,59 @@ export class VideosPageComponent implements OnDestroy, OnInit {
         return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remaining).padStart(2, '0')}` : `${minutes}:${String(remaining).padStart(2, '0')}`;
     }
 
-    playbackUrl(video: Video): string {
-        return `/play/${encodeURIComponent(video.video_id)}`;
+    search(value: string): void {
+        this.searchQuery.set(value.trim());
+        this.currentPage.set(1);
+        this.loadVideos();
     }
 
-    play(video: Video): void {
-        const closing = this.playingVideoId() === video.video_id;
-        this.stopPlayer();
-        this.playbackError.set('');
-        this.playingVideoId.set(closing ? null : video.video_id);
-        if (!closing) this.verifyManifest(video);
+    goToPage(page: number): void {
+        this.currentPage.set(Math.min(Math.max(page, 1), Math.max(this.totalPages(), 1)));
+        this.loadVideos();
+    }
+
+    pageNumbers(): number[] {
+        const pageCount = this.totalPages();
+        if (pageCount <= 1) return [];
+        const start = Math.max(1, Math.min(this.currentPage() - 2, pageCount - 4));
+        const end = Math.min(pageCount, start + 4);
+        return Array.from({length: end - start + 1}, (_, index) => start + index);
+    }
+
+    downloaded(video: Video): boolean {
+        return video.downloaded === true || video.cache_status === 'COMPLETE';
+    }
+
+    formatBytes(bytes?: number): string {
+        if (!bytes) return '—';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+        return `${(bytes / 1024 ** exponent).toFixed(exponent ? 1 : 0)} ${units[exponent]}`;
     }
 
     thumbnailError(event: Event): void {
         (event.target as HTMLImageElement).hidden = true;
     }
 
-    playerError(): void {
-        const nativeError = this.player?.nativeElement.error;
-        console.error('FinTube native video error', nativeError);
-        if (!this.playbackError()) this.playbackError.set(`Browser could not play the media stream${nativeError ? ` (media error ${nativeError.code})` : ''}. Check the browser console for details.`);
-    }
-
-    ngOnDestroy(): void {
-        this.stopPlayer();
-    }
-
-    private startPlayer(video: Video): void {
-        const element = this.player?.nativeElement;
-        if (!element || this.playingVideoId() !== video.video_id) return;
-        const source = this.playbackUrl(video);
-        if (element.canPlayType('application/vnd.apple.mpegurl')) {
-            element.src = source;
-            void element.play().catch(() => undefined);
-            return;
-        }
-        if (!Hls.isSupported()) {
-            this.playbackError.set('This browser cannot play HLS video.');
-            return;
-        }
-        this.hls = new Hls();
-        this.hls.loadSource(source);
-        this.hls.attachMedia(element);
-        this.hls.on(Hls.Events.MANIFEST_PARSED, () => void element.play().catch(() => undefined));
-        this.hls.on(Hls.Events.ERROR, (_event, data) => {
-            if (!data.fatal) return;
-            console.error('FinTube HLS error', data);
-            this.playbackError.set(`HLS playback failed: ${data.type} (${data.details}). Check the browser console for details.`);
-        });
-    }
-
-    private verifyManifest(video: Video): void {
-        this.http.get(this.playbackUrl(video), {responseType: 'text'}).subscribe({
-            next: () => setTimeout(() => this.startPlayer(video)),
-            error: (error: unknown) => this.playbackError.set(this.messageFor(error, 'Playback manifest could not be resolved. Check the backend console for a PLAYBACK_MANIFEST_FAILED event.'))
-        });
-    }
-
-    private stopPlayer(): void {
-        this.hls?.destroy();
-        this.hls = undefined;
-        const element = this.player?.nativeElement;
-        if (element) {
-            element.pause();
-            element.removeAttribute('src');
-            element.load();
-        }
-    }
-
     private loadVideos(): void {
+        const requestSequence = ++this.requestSequence;
         this.loading.set(true);
-        this.libraryApi.listVideos().subscribe({
-            next: rows => {
-                this.videos.set(rows);
-                this.videoCountChange.emit(rows.length);
+        this.libraryApi.listVideos({
+            page: this.currentPage(),
+            pageSize: this.pageSize,
+            search: this.searchQuery() || undefined
+        }).subscribe({
+            next: result => {
+                if (requestSequence !== this.requestSequence) return;
+                this.videos.set(result.items);
+                this.currentPage.set(result.page);
+                this.totalVideos.set(result.total_elements);
+                this.totalPages.set(result.total_pages);
+                if (!this.searchQuery()) this.videoCountChange.emit(result.total_elements);
                 this.loading.set(false);
             },
             error: (error: unknown) => {
+                if (requestSequence !== this.requestSequence) return;
                 this.loading.set(false);
                 this.error.set(this.messageFor(error, 'Could not load videos.'));
             }

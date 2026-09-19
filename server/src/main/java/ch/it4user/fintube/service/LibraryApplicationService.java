@@ -7,6 +7,7 @@ import ch.it4user.fintube.api.contract.model.RefreshResult;
 import ch.it4user.fintube.api.contract.model.Subscription;
 import ch.it4user.fintube.api.contract.model.ToggleSubscriptionRequest;
 import ch.it4user.fintube.api.contract.model.Video;
+import ch.it4user.fintube.api.contract.model.VideoPage;
 import ch.it4user.fintube.core.AuditLogger;
 import ch.it4user.fintube.core.ApplicationClock;
 import ch.it4user.fintube.core.ApplicationPaths;
@@ -61,6 +62,8 @@ import org.springframework.transaction.annotation.Transactional;
 public class LibraryApplicationService {
     private static final Logger LOG = LoggerFactory.getLogger(LibraryApplicationService.class);
     private static final int MAX_COOKIE_BYTES = 5_000_000;
+    private static final int DEFAULT_VIDEO_PAGE_SIZE = 100;
+    private static final int MAX_VIDEO_PAGE_SIZE = 100;
     private static final int MAX_SUBSCRIPTION_FEED_ITEMS = 5_000;
     private static final Duration COOKIE_IMPORT_TIMEOUT = Duration.ofSeconds(180);
     private static final Pattern YOUTUBE_CHANNEL_ID = Pattern.compile("(?<![A-Za-z0-9_-])(UC[A-Za-z0-9_-]{20,})(?![A-Za-z0-9_-])");
@@ -280,13 +283,33 @@ public class LibraryApplicationService {
         });
     }
 
-    public List<Video> videos(HttpServletRequest request) {
+    public VideoPage videos(HttpServletRequest request, Integer page, Integer pageSize, String search) {
         return database(() -> {
             AuthService.Principal principal = authorization.requireUser(request);
-            List<LibraryVideoRepository.VideoView> items = videos.findForUser(principal.id());
+            int requestedPage = page == null ? 1 : page;
+            int requestedPageSize = pageSize == null ? DEFAULT_VIDEO_PAGE_SIZE : pageSize;
+            if (requestedPage < 1) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "page must be at least 1");
+            if (requestedPageSize < 1 || requestedPageSize > MAX_VIDEO_PAGE_SIZE) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "page_size must be between 1 and 100");
+            }
+            String query = search == null ? "" : search.trim();
+            if (query.length() > 255) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "search is too long");
+            long totalElements = videos.countForUser(principal.id(), query);
+            int totalPages = totalElements == 0
+                    ? 0
+                    : Math.toIntExact((totalElements + requestedPageSize - 1) / requestedPageSize);
             long retention = Long.parseLong(settings.value("cache_retention_days") == null
                     ? "30" : settings.value("cache_retention_days"));
-            return items.stream().map(item -> video(item, retention)).toList();
+            List<LibraryVideoRepository.VideoView> items = requestedPage > totalPages
+                    ? List.of()
+                    : videos.findForUser(principal.id(), query, requestedPageSize,
+                    Math.toIntExact((long) (requestedPage - 1) * requestedPageSize));
+            return new VideoPage()
+                    .items(items.stream().map(item -> video(item, retention)).toList())
+                    .page(requestedPage)
+                    .pageSize(requestedPageSize)
+                    .totalElements(totalElements)
+                    .totalPages(totalPages);
         });
     }
 

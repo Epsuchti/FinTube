@@ -349,8 +349,8 @@ export class SubscriptionsPageComponent implements OnInit {
     }
 
     private loadVideoCount(): void {
-        this.libraryApi.listVideos().subscribe({
-            next: rows => this.videoCountChange.emit(rows.length)
+        this.libraryApi.listVideos({page: 1, pageSize: 1}).subscribe({
+            next: result => this.videoCountChange.emit(result.total_elements)
         });
     }
 

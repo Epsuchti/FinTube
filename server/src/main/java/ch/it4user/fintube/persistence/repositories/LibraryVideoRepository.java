@@ -48,7 +48,26 @@ public interface LibraryVideoRepository extends Repository<VideoEntity, String> 
               JOIN youtube_channels c ON c.channel_id = v.channel_id
               LEFT JOIN cache_entries e ON e.video_id = v.video_id
              WHERE uv.user_id = :userId
-             ORDER BY v.published_at DESC
+               AND (:search = '' OR LOWER(v.video_id) LIKE CONCAT('%', LOWER(:search), '%')
+                    OR LOWER(v.title) LIKE CONCAT('%', LOWER(:search), '%')
+                    OR LOWER(c.name) LIKE CONCAT('%', LOWER(:search), '%'))
+             ORDER BY v.published_at DESC, v.video_id ASC
+             LIMIT :pageSize OFFSET :offset
             """, nativeQuery = true)
-    List<VideoView> findForUser(@Param("userId") long userId);
+    List<VideoView> findForUser(@Param("userId") long userId,
+                                @Param("search") String search,
+                                @Param("pageSize") int pageSize,
+                                @Param("offset") int offset);
+
+    @Query(value = """
+            SELECT COUNT(*)
+              FROM user_videos uv
+              JOIN videos v ON v.video_id = uv.video_id
+              JOIN youtube_channels c ON c.channel_id = v.channel_id
+             WHERE uv.user_id = :userId
+               AND (:search = '' OR LOWER(v.video_id) LIKE CONCAT('%', LOWER(:search), '%')
+                    OR LOWER(v.title) LIKE CONCAT('%', LOWER(:search), '%')
+                    OR LOWER(c.name) LIKE CONCAT('%', LOWER(:search), '%'))
+            """, nativeQuery = true)
+    long countForUser(@Param("userId") long userId, @Param("search") String search);
 }

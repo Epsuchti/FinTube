@@ -38,6 +38,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -145,8 +146,16 @@ class OwnershipIsolationTest {
         userVideos.save(new UserVideoEntity(userId, videoId, libraryPath.toString(),
                 "playback-token-" + videoId, ApplicationClock.now()));
 
-        mvc.perform(get("/api/videos").cookie(session))
+        mvc.perform(get("/api/videos").cookie(session)
+                        .param("page", "1")
+                        .param("page_size", "1")
+                        .param("search", "Video Channel"))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.page").value(1))
+                .andExpect(jsonPath("$.page_size").value(1))
+                .andExpect(jsonPath("$.total_elements").value(1))
+                .andExpect(jsonPath("$.total_pages").value(1))
+                .andExpect(jsonPath("$.items.length()").value(1))
                 .andExpect(result -> assertThat(result.getResponse().getContentAsString())
                         .contains("A description stored in a CLOB"));
         mvc.perform(get("/api/videos/" + videoId + "/thumbnail").cookie(session))

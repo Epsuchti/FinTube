@@ -32,7 +32,14 @@ paths:
     parameters: [ { name: id, in: path, required: true, schema: { type: integer, format: int64 } } ]
     post: { tags: [ Library ], operationId: refreshSubscription, responses: { '200': { description: Refreshed, content: { application/json: { schema: { $ref: '#/components/schemas/RefreshResult' } } } } } }
   /videos:
-    get: { tags: [ Library ], operationId: listVideos, responses: { '200': { description: Videos, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Video' } } } } } } }
+    get:
+      tags: [ Library ]
+      operationId: listVideos
+      parameters:
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 100 } }
+        - { name: search, in: query, required: false, schema: { type: string, maxLength: 255 } }
+      responses: { '200': { description: Paginated videos, content: { application/json: { schema: { $ref: '#/components/schemas/VideoPage' } } } } }
   /videos/{video}/thumbnail:
     parameters: [ { name: video, in: path, required: true, schema: { type: string } } ]
     get: { tags: [ Library ], operationId: getVideoThumbnail, responses: { '200': { description: Video thumbnail, content: { image/jpeg: { schema: { type: string, format: binary } } } }, '404': { description: Thumbnail not found } } }
@@ -83,6 +90,7 @@ components:
     OperationResult: { type: object, properties: { success: { type: boolean }, message: { type: string } } }
     Subscription: { type: object, required: [ id, channel_id, name, enabled, initial_import_count, short_import_count, live_stream_import_count, download_count, short_download_count, live_stream_download_count ], properties: { id: { type: integer, format: int64 }, channel_id: { type: string }, name: { type: string }, url: { type: string }, enabled: { type: boolean }, initial_import_count: { type: integer, minimum: 0, maximum: 1000 }, short_import_count: { type: integer, minimum: 0, maximum: 1000 }, live_stream_import_count: { type: integer, minimum: 0, maximum: 1000 }, download_count: { type: integer, minimum: 0, maximum: 1000 }, short_download_count: { type: integer, minimum: 0, maximum: 1000 }, live_stream_download_count: { type: integer, minimum: 0, maximum: 1000 }, last_checked_at: { type: string }, last_successful_sync_at: { type: string } } }
     Video: { type: object, required: [ video_id, title ], properties: { video_id: { type: string }, title: { type: string }, description: { type: string }, published_at: { type: string }, duration_seconds: { type: integer }, channel: { type: string }, thumbnail_url: { type: string }, library_path: { type: string }, cache_status: { type: string }, cache_last_accessed_at: { type: string }, cache_expires_at: { type: string }, cache_bytes: { type: integer, format: int64 }, cached_fragments: { type: integer }, downloaded: { type: boolean } } }
+    VideoPage: { type: object, required: [ items, page, page_size, total_elements, total_pages ], properties: { items: { type: array, items: { $ref: '#/components/schemas/Video' } }, page: { type: integer }, page_size: { type: integer }, total_elements: { type: integer, format: int64 }, total_pages: { type: integer } } }
     AdminUser: { type: object, required: [ id, username, role, filesystem_slug, created_at ], properties: { id: { type: integer, format: int64 }, username: { type: string }, email: { type: string }, role: { $ref: '#/components/schemas/Role' }, filesystem_slug: { type: string }, created_at: { type: string } } }
     CacheEntry: { type: object, required: [ video_id, status ], properties: { video_id: { type: string }, video_title: { type: string }, channel_name: { type: string }, format_key: { type: string }, status: { type: string }, last_accessed_at: { type: string }, active_readers: { type: integer }, active_writers: { type: integer } } }
     Job: { type: object, required: [ id, video_id, status, priority, created_at ], properties: { id: { type: string }, video_id: { type: string }, status: { type: string }, priority: { type: integer }, created_at: { type: string }, error: { type: string } } }

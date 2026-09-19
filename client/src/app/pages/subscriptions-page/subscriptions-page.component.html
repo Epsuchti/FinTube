@@ -51,7 +51,8 @@
   <form class="inline-form" (ngSubmit)="addSubscription()"><input name="channel" [(ngModel)]="channel" placeholder="https://youtube.com/@ExampleChannel"><button class="primary" type="submit" [disabled]="loading()">Add channel</button></form>
 </section>
 
-<div class="subscription-grid">
+@if (loading()) {<div class="loading-state subscription-loading" role="status"><span class="spinner" aria-hidden="true"></span><span>{{ subscriptions().length ? 'Updating subscriptions…' : 'Loading subscriptions…' }}</span></div>}
+@if (!loading() || subscriptions().length) {<div class="subscription-grid">
   @for (subscription of filteredSubscriptions(); track subscription.id) {
     <article class="subscription-card" [class.subscription-paused]="!enabled(subscription)">
       <div class="subscription-card-top">
@@ -92,4 +93,4 @@
   } @empty {
     <div class="empty-state"><div class="empty-icon">＋</div><h3>{{ appliedSearch() ? 'No matching channels' : 'No subscriptions yet' }}</h3><p class="muted">{{ appliedSearch() ? 'Try a different search.' : 'Add a channel above or import your YouTube subscriptions to populate your private Jellyfin library.' }}</p></div>
   }
-</div>
+</div>}

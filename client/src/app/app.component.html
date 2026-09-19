@@ -13,7 +13,6 @@
         <p class="nav-label">LIBRARY</p>
         <button [class.active]="section() === 'subscriptions'" type="button" (click)="setSection('subscriptions')">Subscriptions</button>
         <button [class.active]="section() === 'videos'" type="button" (click)="setSection('videos')">Videos <span>{{ videoCount() }}</span></button>
-        <button [class.active]="section() === 'downloads'" type="button" (click)="setSection('downloads')">Downloads</button>
         <p class="nav-label">ACCOUNT</p>
         <button [class.active]="section() === 'account'" type="button" (click)="setSection('account')">Profile &amp; security</button>
         @if (me()?.role === 'ADMIN') {
@@ -30,10 +29,7 @@
           <ft-subscriptions-page (videoCountChange)="videoCount.set($event)" />
         }
         @if (section() === 'videos') {
-          <ft-videos-page (manageChannels)="setSection('subscriptions')" (videoCountChange)="videoCount.set($event)" />
-        }
-        @if (section() === 'downloads') {
-          <ft-downloads-page />
+          <ft-videos-page (videoCountChange)="videoCount.set($event)" />
         }
         @if (section() === 'account') {
           <ft-account-page />

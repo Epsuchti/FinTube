@@ -4,7 +4,6 @@ import {HttpErrorResponse} from '@angular/common/http';
 import {AccountService, AuthenticationService, Profile, SetupService} from './api';
 import {SubscriptionsPageComponent} from './pages/subscriptions-page/subscriptions-page.component';
 import {VideosPageComponent} from './pages/videos-page/videos-page.component';
-import {DownloadsPageComponent} from './pages/downloads-page/downloads-page.component';
 import {AccountPageComponent} from './pages/account-page/account-page.component';
 import {AdminUsersPageComponent} from './pages/admin-users-page/admin-users-page.component';
 import {AdminSettingsPageComponent} from './pages/admin-settings-page/admin-settings-page.component';
@@ -17,7 +16,6 @@ import {InitialSetupPageComponent} from './pages/initial-setup-page/initial-setu
 type Section =
     | 'subscriptions'
     | 'videos'
-    | 'downloads'
     | 'account'
     | 'users'
     | 'settings'
@@ -31,7 +29,6 @@ type Section =
         CommonModule,
         SubscriptionsPageComponent,
         VideosPageComponent,
-        DownloadsPageComponent,
         AccountPageComponent,
         AdminUsersPageComponent,
         AdminSettingsPageComponent,

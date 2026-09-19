@@ -8,7 +8,7 @@ import ch.it4user.fintube.api.contract.model.ImportChannelsResult;
 import ch.it4user.fintube.api.contract.model.ImportCookiesRequest;
 import ch.it4user.fintube.api.contract.model.RefreshResult;
 import ch.it4user.fintube.api.contract.model.ToggleSubscriptionRequest;
-import ch.it4user.fintube.api.contract.model.Video;
+import ch.it4user.fintube.api.contract.model.VideoPage;
 import org.springframework.core.io.Resource;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -47,8 +47,8 @@ public class LibraryContractController implements LibraryApi {
     }
 
     @Override
-    public ResponseEntity<List<Video>> listVideos() {
-        return ResponseEntity.ok(library.videos(requestContext));
+    public ResponseEntity<VideoPage> listVideos(Integer page, Integer pageSize, String search) {
+        return ResponseEntity.ok(library.videos(requestContext, page, pageSize, search));
     }
 
     @Override
