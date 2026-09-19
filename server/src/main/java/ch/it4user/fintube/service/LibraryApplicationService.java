@@ -374,11 +374,17 @@ public class LibraryApplicationService {
         }
         int exitCode = process.exitValue();
         byte[] outputBytes = output.join();
-        errors.join();
+        byte[] errorBytes = errors.join();
         if (exitCode != 0) {
-            LOG.warn("YouTube subscription import failed with yt-dlp exit code {}", exitCode);
+            String errorOutput = new String(errorBytes, StandardCharsets.UTF_8).strip();
+            if (errorOutput.length() > 4000) {
+                errorOutput = errorOutput.substring(0, 4000) + "...";
+            }
+            Throwable cause = errorOutput.isBlank()
+                    ? null
+                    : new IllegalStateException("yt-dlp stderr: " + errorOutput);
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
-                    "yt-dlp could not read the YouTube subscriptions feed");
+                    "yt-dlp could not read the YouTube subscriptions feed", cause);
         }
         JsonNode root = objectMapper.readTree(new String(outputBytes, StandardCharsets.UTF_8));
         return channelsFromFeed(root);
