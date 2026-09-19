@@ -23,3 +23,7 @@ databaseChangeLog:
       file: db/changelog/012-channel-download-categories.yaml
   - include:
       file: db/changelog/013-video-live-category.yaml
+  - include:
+      file: db/changelog/014-playback-background-fill-setting.yaml
+  - include:
+      file: db/changelog/015-default-playback-background-fill-disabled.yaml

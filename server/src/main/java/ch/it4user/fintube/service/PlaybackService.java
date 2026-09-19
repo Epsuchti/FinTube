@@ -3,6 +3,7 @@ package ch.it4user.fintube.service;
 import ch.it4user.fintube.media.BackgroundFillService;
 import ch.it4user.fintube.media.FragmentManager;
 import ch.it4user.fintube.media.MediaSourceService;
+import ch.it4user.fintube.core.SettingsService;
 import ch.it4user.fintube.persistence.entities.UserVideoEntity;
 import ch.it4user.fintube.persistence.repositories.UserVideoRepository;
 import jakarta.servlet.http.HttpServletRequest;
@@ -22,18 +23,21 @@ import java.nio.file.Path;
 @Service
 public class PlaybackService {
     private static final Logger LOG = LoggerFactory.getLogger(PlaybackService.class);
+    private static final String BACKGROUND_FILL_ON_PLAYBACK = "background_fill_on_playback";
     private final UserVideoRepository userVideos;
     private final AuthService auth;
     private final MediaSourceService sources;
     private final FragmentManager fragments;
     private final BackgroundFillService filler;
+    private final SettingsService settings;
 
-    public PlaybackService(UserVideoRepository userVideos, AuthService auth, MediaSourceService sources, FragmentManager fragments, BackgroundFillService filler) {
+    public PlaybackService(UserVideoRepository userVideos, AuthService auth, MediaSourceService sources, FragmentManager fragments, BackgroundFillService filler, SettingsService settings) {
         this.userVideos = userVideos;
         this.auth = auth;
         this.sources = sources;
         this.fragments = fragments;
         this.filler = filler;
+        this.settings = settings;
     }
 
     public String manifest(String video, String token) {
@@ -45,7 +49,7 @@ public class PlaybackService {
             String resolvedToken = resolveToken(video, token, request);
             valid(video, resolvedToken);
             var source = sources.source(video);
-            filler.enqueue(video, "playback_manifest");
+            if (backgroundFillOnPlayback()) filler.enqueue(video, "playback_manifest");
             StringBuilder output = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-PLAYLIST-TYPE:VOD\n");
             output.append("#EXT-X-TARGETDURATION:").append(source.targetDuration()).append("\n#EXT-X-MEDIA-SEQUENCE:0\n");
             for (var fragment : source.fragments()) {
@@ -118,6 +122,11 @@ public class PlaybackService {
     private static String fragmentExtension(MediaSourceService.Source source) {
         if (!source.progressive()) return ".ts";
         return "webm".equalsIgnoreCase(source.container()) ? ".webm" : ".mp4";
+    }
+
+    private boolean backgroundFillOnPlayback() {
+        String value = settings.value(BACKGROUND_FILL_ON_PLAYBACK);
+        return Boolean.parseBoolean(value);
     }
 
     private static String fragmentId(String value) {

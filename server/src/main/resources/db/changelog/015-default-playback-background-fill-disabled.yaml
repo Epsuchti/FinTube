@@ -1,0 +1,12 @@
+databaseChangeLog:
+  - changeSet:
+      id: 015-default-playback-background-fill-disabled
+      author: fintube
+      changes:
+        - sql:
+            sql: >-
+              UPDATE settings
+              SET value = 'false'
+              WHERE key = 'background_fill_on_playback'
+                AND value = 'true'
+                AND updated_at = '1970-01-01T00:00:00Z'

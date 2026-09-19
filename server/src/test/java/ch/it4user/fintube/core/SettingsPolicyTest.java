@@ -14,6 +14,7 @@ class SettingsPolicyTest {
                 "stream_quality", "1080",
                 "cache_retention_days", "30",
                 "cache_cleanup_interval_minutes", "360",
+                "background_fill_on_playback", "false",
                 "public_base_url", "https://bridge.example.test",
                 "jellyfin_url", "http://jellyfin:8096",
                 "jellyfin_request_timeout_seconds", "10",
@@ -32,6 +33,8 @@ class SettingsPolicyTest {
         assertThatThrownBy(() -> SettingsPolicy.validate(Map.of("stream_quality", "999")))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> SettingsPolicy.validate(Map.of("cache_retention_days", "0")))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> SettingsPolicy.validate(Map.of("background_fill_on_playback", "sometimes")))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> SettingsPolicy.validate(Map.of("public_base_url", "https://user:password@example.test")))
                 .isInstanceOf(IllegalArgumentException.class);
