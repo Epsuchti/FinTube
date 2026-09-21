@@ -1,0 +1,9 @@
+databaseChangeLog:
+  - changeSet:
+      id: 022-user-youtube-watch-cookie
+      author: fintube
+      changes:
+        - addColumn:
+            tableName: users
+            columns:
+              - column: {name: youtube_watch_cookie_path, type: clob}

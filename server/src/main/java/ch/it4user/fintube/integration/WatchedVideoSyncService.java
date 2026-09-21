@@ -13,6 +13,7 @@ import ch.it4user.fintube.persistence.repositories.UserVideoRepository;
 import ch.it4user.fintube.persistence.repositories.VideoRepository;
 import ch.it4user.fintube.persistence.repositories.WatchedVideoRepository;
 import ch.it4user.fintube.persistence.repositories.YouTubeChannelRepository;
+import ch.it4user.fintube.service.UserYouTubeApiKeyService;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
@@ -23,6 +24,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -48,12 +50,14 @@ public class WatchedVideoSyncService {
   private final VideoRepository videos;
   private final YouTubeChannelRepository channels;
   private final ProxiedHttpClient externalHttp;
+  private final UserYouTubeApiKeyService youtubeApiKeys;
 
   public WatchedVideoSyncService(SettingsService settings, ApplicationPaths paths,
                                  JellyfinClient jellyfinClient, JellyfinSyncService jellyfinSync,
                                  UserVideoRepository userVideos, WatchedVideoRepository watchedVideos,
                                  UserRepository users, VideoRepository videos,
-                                 YouTubeChannelRepository channels, ProxiedHttpClient externalHttp) {
+                                 YouTubeChannelRepository channels, ProxiedHttpClient externalHttp,
+                                 UserYouTubeApiKeyService youtubeApiKeys) {
     this.settings = settings;
     this.paths = paths;
     this.jellyfinClient = jellyfinClient;
@@ -64,6 +68,7 @@ public class WatchedVideoSyncService {
     this.videos = videos;
     this.channels = channels;
     this.externalHttp = externalHttp;
+    this.youtubeApiKeys = youtubeApiKeys;
   }
 
   /** Failures are deliberately isolated so watch-history outages never block ingestion. */
@@ -124,30 +129,28 @@ public class WatchedVideoSyncService {
   }
 
   private void markPendingOnYouTube(Map<String, String> current) {
-    String cookieFile = current.getOrDefault("youtube_watch_cookie_file", "").trim();
-    if (cookieFile.isBlank() || !Files.isRegularFile(Path.of(cookieFile))) {
-      LOG.warn("event=YOUTUBE_WATCH_MARK_SKIPPED reason=watch_cookie_file_missing");
-      return;
-    }
     List<WatchedVideoEntity> pending = watchedVideos.findByYoutubeMarkedAtIsNullOrderByWatchedAtAsc(
         PageRequest.of(0, MAX_YOUTUBE_MARKS_PER_SYNC));
     if (pending.isEmpty()) return;
-    List<String> videoIds = List.copyOf(new LinkedHashSet<>(pending.stream()
-        .map(value -> value.getId().getVideoId()).toList()));
-    try {
-      markWatched(videoIds, current, cookieFile);
-      for (WatchedVideoEntity watched : pending) {
-        watched.setYoutubeMarkedAt(ApplicationClock.now());
-        watched.setYoutubeMarkError(null);
+    Map<Long, List<WatchedVideoEntity>> byUser = pending.stream()
+        .collect(java.util.stream.Collectors.groupingBy(value -> value.getId().getUserId(), LinkedHashMap::new, java.util.stream.Collectors.toList()));
+    for (Map.Entry<Long, List<WatchedVideoEntity>> entry : byUser.entrySet()) {
+      String cookieFile = youtubeApiKeys.watchCookie(entry.getKey());
+      if (cookieFile == null || cookieFile.isBlank() || !Files.isRegularFile(Path.of(cookieFile))) {
+        LOG.warn("event=YOUTUBE_WATCH_MARK_SKIPPED userId={} reason=watch_cookie_file_missing", entry.getKey());
+        continue;
       }
-      watchedVideos.saveAll(pending);
-      LOG.info("event=YOUTUBE_VIDEOS_MARKED_WATCHED videos={} records={}", videoIds.size(), pending.size());
-    } catch (Exception e) {
-      for (WatchedVideoEntity watched : pending) {
-        watched.setYoutubeMarkError(safeMessage(e));
+      List<String> videoIds = List.copyOf(new LinkedHashSet<>(entry.getValue().stream().map(value -> value.getId().getVideoId()).toList()));
+      try {
+        markWatched(videoIds, current, cookieFile);
+        for (WatchedVideoEntity watched : entry.getValue()) { watched.setYoutubeMarkedAt(ApplicationClock.now()); watched.setYoutubeMarkError(null); }
+        watchedVideos.saveAll(entry.getValue());
+        LOG.info("event=YOUTUBE_VIDEOS_MARKED_WATCHED userId={} videos={} records={}", entry.getKey(), videoIds.size(), entry.getValue().size());
+      } catch (Exception e) {
+        for (WatchedVideoEntity watched : entry.getValue()) watched.setYoutubeMarkError(safeMessage(e));
+        watchedVideos.saveAll(entry.getValue());
+        LOG.warn("event=YOUTUBE_WATCH_MARK_FAILED userId={} videos={} reason={}", entry.getKey(), videoIds.size(), safeMessage(e));
       }
-      watchedVideos.saveAll(pending);
-      LOG.warn("event=YOUTUBE_WATCH_MARK_FAILED videos={} reason={}", videoIds.size(), safeMessage(e));
     }
   }
 

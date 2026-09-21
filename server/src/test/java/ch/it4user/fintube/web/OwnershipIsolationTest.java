@@ -23,6 +23,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.mock.web.MockMultipartFile;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -34,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -188,6 +190,22 @@ class OwnershipIsolationTest {
         mvc.perform(patch("/api/admin/settings").cookie(session).contentType(APPLICATION_JSON)
                         .content("{\"unexpected_secret\":\"value\"}"))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void usersCanUploadTheirOwnWatchedHistoryCookiesWithoutAHostPath() throws Exception {
+        String username = unique("cookie-user");
+        Cookie session = register(username, "user password that is long");
+        long userId = users.findByUsername(username).orElseThrow().getId();
+        MockMultipartFile file = new MockMultipartFile("file", "cookies.txt", "text/plain",
+                "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tvalue\n".getBytes());
+
+        mvc.perform(multipart("/api/me/youtube-watch-cookie").file(file).cookie(session))
+                .andExpect(status().isOk());
+
+        Path stored = paths.root.resolve("secrets/youtube-watch-history-cookies-" + userId + ".txt");
+        assertThat(users.findById(userId).orElseThrow().getYoutubeWatchCookiePath()).startsWith("enc:v1:");
+        assertThat(Files.readString(stored)).contains("Netscape HTTP Cookie File");
     }
 
     @Test

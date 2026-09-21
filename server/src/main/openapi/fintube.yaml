@@ -21,6 +21,20 @@ paths:
   /me/youtube-api-key:
     get: { tags: [ Account ], operationId: getYouTubeApiKeyStatus, responses: { '200': { description: YouTube API key status, content: { application/json: { schema: { $ref: '#/components/schemas/YouTubeApiKeyStatus' } } } }, '401': { description: Unauthenticated } } }
     put: { tags: [ Account ], operationId: updateYouTubeApiKey, requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/UpdateYouTubeApiKeyRequest' } } } }, responses: { '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/YouTubeApiKeyStatus' } } } }, '400': { description: Invalid key }, '401': { description: Unauthenticated } } }
+  /me/youtube-watch-cookie:
+    post:
+      tags: [ Account ]
+      operationId: uploadYouTubeWatchCookie
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [ file ]
+              properties:
+                file: { type: string, format: binary }
+      responses: { '200': { description: Uploaded }, '400': { description: Invalid cookie file }, '401': { description: Unauthenticated } }
   /subscriptions:
     get: { tags: [ Library ], operationId: listSubscriptions, responses: { '200': { description: Subscriptions, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Subscription' } } } } } } }
     post: { tags: [ Library ], operationId: addSubscription, requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AddSubscriptionRequest' } } } }, responses: { '200': { description: Added } } }

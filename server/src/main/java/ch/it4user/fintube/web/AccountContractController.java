@@ -12,6 +12,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/api")
@@ -43,5 +44,11 @@ public class AccountContractController implements AccountApi {
     @Override
     public ResponseEntity<YouTubeApiKeyStatus> updateYouTubeApiKey(UpdateYouTubeApiKeyRequest request) {
         return ResponseEntity.ok(account.updateYouTubeApiKey(requestContext, request));
+    }
+
+    @Override
+    public ResponseEntity<Void> uploadYouTubeWatchCookie(MultipartFile file) {
+        account.uploadYouTubeWatchCookie(requestContext, file);
+        return ResponseEntity.ok().build();
     }
 }

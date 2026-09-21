@@ -25,6 +25,9 @@ public class UserEntity {
     @Lob
     @Column(name = "youtube_api_key")
     private String youtubeApiKey;
+    @Lob
+    @Column(name = "youtube_watch_cookie_path")
+    private String youtubeWatchCookiePath;
 
     protected UserEntity() {
     }
@@ -70,6 +73,9 @@ public class UserEntity {
     public void setYoutubeApiKey(String value) {
         youtubeApiKey = value;
     }
+
+    public String getYoutubeWatchCookiePath() { return youtubeWatchCookiePath; }
+    public void setYoutubeWatchCookiePath(String value) { youtubeWatchCookiePath = value; }
 
     public void setPasswordHash(String value) {
         passwordHash = value;

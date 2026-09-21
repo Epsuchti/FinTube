@@ -13,6 +13,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.multipart.MultipartFile;
 
 import jakarta.servlet.http.HttpServletRequest;
 
@@ -68,5 +69,11 @@ public class AccountApplicationService {
         audit.event("YOUTUBE_API_KEY_UPDATED", java.util.Map.of(
                 "userId", principal.id(), "configured", !requestBody.getApiKey().isBlank()));
         return new YouTubeApiKeyStatus(youtubeApiKeys.configured(principal.id()));
+    }
+
+    public void uploadYouTubeWatchCookie(HttpServletRequest request, MultipartFile file) {
+        AuthService.Principal principal = authorization.requireUser(request);
+        youtubeApiKeys.uploadWatchCookie(principal.id(), file);
+        audit.event("YOUTUBE_WATCH_COOKIE_UPLOADED", java.util.Map.of("userId", principal.id()));
     }
 }

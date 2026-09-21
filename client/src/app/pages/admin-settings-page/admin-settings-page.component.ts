@@ -56,7 +56,6 @@ export class AdminSettingsPageComponent implements OnInit {
         jellyfin_remove_watched: 'Remove watched videos during sync',
         jellyfin_watched_user: 'Jellyfin user (name or ID)',
         youtube_mark_watched: 'Mark removed videos watched on YouTube',
-        youtube_watch_cookie_file: 'YouTube watched-state cookie file',
         jellyfin_request_timeout_seconds: 'Jellyfin request timeout (seconds)',
         yt_dlp_path: 'yt-dlp path',
         ffmpeg_path: 'FFmpeg path',
@@ -70,7 +69,6 @@ export class AdminSettingsPageComponent implements OnInit {
         'jellyfin_api_key',
         'proxy_password',
         'cookie_file',
-        'youtube_watch_cookie_file',
         'youtube_po_token'
     ]);
     readonly settingGroups: SettingGroup[] = [
@@ -84,7 +82,7 @@ export class AdminSettingsPageComponent implements OnInit {
         },
         {
             title: 'YouTube',
-            keys: ['initial_channel_import_count', 'initial_short_import_count', 'initial_live_stream_import_count', 'subscription_sync_minutes', 'youtube_mark_watched', 'youtube_watch_cookie_file', 'youtube_player_client', 'youtube_po_token_provider_enabled', 'youtube_po_token']
+            keys: ['initial_channel_import_count', 'initial_short_import_count', 'initial_live_stream_import_count', 'subscription_sync_minutes', 'youtube_mark_watched', 'youtube_player_client', 'youtube_po_token_provider_enabled', 'youtube_po_token']
         },
         {
             title: 'Jellyfin',
@@ -125,7 +123,6 @@ export class AdminSettingsPageComponent implements OnInit {
         if (key === 'jellyfin_remove_watched') return 'On each normal sync, remove library files that this Jellyfin user has marked played. A persistent record prevents them from being imported again.';
         if (key === 'jellyfin_watched_user') return 'Exact Jellyfin username or user ID whose played state should be reconciled.';
         if (key === 'youtube_mark_watched') return 'Uses yt-dlp and the separate watched-state cookie file to update the selected YouTube account. Failures are retried on later syncs.';
-        if (key === 'youtube_watch_cookie_file') return 'Netscape cookies.txt for the account that receives watched-history updates. This file is never used to fetch or download media.';
         if (key === 'cookie_file') return 'Optional Netscape cookies.txt used only while fetching YouTube media.';
         return this.secretSettings.has(key) ? 'Secret · stored server-side and never shown to normal users' : 'Administrator-controlled global value';
     }

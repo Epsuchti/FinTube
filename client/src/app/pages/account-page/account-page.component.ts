@@ -20,6 +20,7 @@ export class AccountPageComponent implements OnInit {
     readonly error = signal('');
     readonly notice = signal('');
     readonly youtubeApiKeyConfigured = signal(false);
+    readonly uploadingWatchCookie = signal(false);
     oldPassword = '';
     newPassword = '';
     confirmation = '';
@@ -69,6 +70,25 @@ export class AccountPageComponent implements OnInit {
             error: (error: unknown) => {
                 this.saving.set(false);
                 this.error.set(this.messageFor(error, 'Could not remove your YouTube API key.'));
+            }
+        });
+    }
+
+    uploadWatchCookie(event: Event): void {
+        const input = event.target as HTMLInputElement;
+        const file = input.files?.item(0);
+        if (!file) return;
+        this.uploadingWatchCookie.set(true);
+        this.accountApi.uploadYouTubeWatchCookie({file}).subscribe({
+            next: () => {
+                this.uploadingWatchCookie.set(false);
+                input.value = '';
+                this.notice.set('Your YouTube watched-state cookie file was uploaded securely.');
+            },
+            error: (error: unknown) => {
+                this.uploadingWatchCookie.set(false);
+                input.value = '';
+                this.error.set(this.messageFor(error, 'Could not upload your cookie file.'));
             }
         });
     }

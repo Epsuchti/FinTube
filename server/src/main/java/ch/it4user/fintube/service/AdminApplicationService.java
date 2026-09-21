@@ -8,6 +8,7 @@ import ch.it4user.fintube.api.contract.model.Role;
 import ch.it4user.fintube.api.contract.model.UpdateRoleRequest;
 import ch.it4user.fintube.core.AuditLogger;
 import ch.it4user.fintube.core.ApplicationClock;
+import ch.it4user.fintube.core.ApplicationPaths;
 import ch.it4user.fintube.core.SettingsPolicy;
 import ch.it4user.fintube.core.SettingsService;
 import ch.it4user.fintube.integration.JellyfinSyncService;
@@ -27,14 +28,19 @@ import org.springframework.web.server.ResponseStatusException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import org.springframework.data.domain.Sort;
+import org.springframework.web.multipart.MultipartFile;
 
 @Service
 public class AdminApplicationService {
+    private static final long MAX_WATCH_COOKIE_BYTES = 5_000_000;
     private final SettingsService settings;
     private final UserRepository users;
     private final CacheEntryRepository cacheEntries;
@@ -45,6 +51,7 @@ public class AdminApplicationService {
     private final BackgroundFillService filler;
     private final JellyfinSyncService jellyfin;
     private final AuditLogger audit;
+    private final ApplicationPaths paths;
 
     public AdminApplicationService(SettingsService settings, UserRepository users,
                                    CacheEntryRepository cacheEntries,
@@ -54,7 +61,7 @@ public class AdminApplicationService {
                                    AuthorizationService authorization,
                                    BackgroundFillService filler,
                                    JellyfinSyncService jellyfin,
-                                   AuditLogger audit) {
+                                   AuditLogger audit, ApplicationPaths paths) {
         this.settings = settings;
         this.users = users;
         this.cacheEntries = cacheEntries;
@@ -65,6 +72,7 @@ public class AdminApplicationService {
         this.filler = filler;
         this.jellyfin = jellyfin;
         this.audit = audit;
+        this.paths = paths;
     }
 
     public Map<String, String> settings(HttpServletRequest request) {
@@ -89,6 +97,56 @@ public class AdminApplicationService {
                 settings.save(entry.getKey(), entry.getValue(), SettingsPolicy.isSecret(entry.getKey()));
             }
             audit.event("ADMIN_SETTING_CHANGED", Map.of("userId", admin.id(), "settingCount", values.size()));
+            return null;
+        });
+    }
+
+    /** Store the history account's cookie file in FinTube's private data directory. */
+    public void uploadYouTubeWatchCookie(HttpServletRequest request, MultipartFile file) {
+        database(() -> {
+            AuthService.Principal admin = authorization.requireAdmin(request);
+            if (file == null || file.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Choose a cookies.txt file first");
+            if (file.getSize() > MAX_WATCH_COOKIE_BYTES) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cookie file must be 5 MB or smaller");
+            }
+            byte[] contents;
+            try {
+                contents = file.getBytes();
+            } catch (Exception e) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Could not read uploaded cookie file");
+            }
+            String text = new String(contents, java.nio.charset.StandardCharsets.UTF_8);
+            if (!text.contains("Netscape HTTP Cookie File")) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Upload a Netscape-format cookies.txt file");
+            }
+            Path secrets = paths.root.resolve("secrets").toAbsolutePath().normalize();
+            Path destination = secrets.resolve("youtube-watch-history-cookies.txt");
+            try {
+                Files.createDirectories(secrets);
+                Path temporary = Files.createTempFile(secrets, "youtube-watch-history-", ".tmp");
+                try {
+                    Files.write(temporary, contents);
+                    try {
+                        Files.setPosixFilePermissions(temporary,
+                                Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+                    } catch (UnsupportedOperationException ignored) {
+                        // Non-POSIX filesystems do not provide Unix permissions.
+                    }
+                    try {
+                        Files.move(temporary, destination, StandardCopyOption.ATOMIC_MOVE,
+                                StandardCopyOption.REPLACE_EXISTING);
+                    } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
+                        Files.move(temporary, destination, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                } finally {
+                    Files.deleteIfExists(temporary);
+                }
+            } catch (Exception e) {
+                throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                        "Could not store uploaded cookie file");
+            }
+            settings.save("youtube_watch_cookie_file", destination.toString(), true);
+            audit.event("ADMIN_YOUTUBE_WATCH_COOKIE_UPLOADED", Map.of("userId", admin.id()));
             return null;
         });
     }
