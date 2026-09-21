@@ -1,12 +1,16 @@
 package ch.it4user.fintube.service;
 
 import ch.it4user.fintube.api.contract.model.LoginRequest;
+import ch.it4user.fintube.api.contract.model.PasswordResetConfirmRequest;
+import ch.it4user.fintube.api.contract.model.PasswordResetRequest;
 import ch.it4user.fintube.api.contract.model.RegisterRequest;
 import ch.it4user.fintube.api.contract.model.Role;
 import ch.it4user.fintube.core.AuditLogger;
 import ch.it4user.fintube.core.ApplicationClock;
 import ch.it4user.fintube.core.ApplicationPaths;
 import ch.it4user.fintube.persistence.entities.UserEntity;
+import ch.it4user.fintube.persistence.entities.PasswordResetEntity;
+import ch.it4user.fintube.persistence.repositories.PasswordResetRepository;
 import ch.it4user.fintube.persistence.repositories.UserRepository;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
@@ -16,6 +20,10 @@ import org.springframework.web.server.ResponseStatusException;
 
 import jakarta.servlet.http.HttpServletRequest;
 import java.nio.file.Files;
+import java.security.SecureRandom;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Base64;
 
 @Service
 public class AuthenticationApplicationService {
@@ -23,12 +31,17 @@ public class AuthenticationApplicationService {
     private final UserRepository users;
     private final AuthService auth;
     private final AuditLogger audit;
+    private final PasswordResetRepository passwordResets;
+    private final SecureRandom random = new SecureRandom();
+    private static final Duration RESET_LIFETIME = Duration.ofMinutes(15);
+    private static final Duration RESET_REQUEST_INTERVAL = Duration.ofMinutes(1);
 
-    public AuthenticationApplicationService(ApplicationPaths paths, UserRepository users, AuthService auth, AuditLogger audit) {
+    public AuthenticationApplicationService(ApplicationPaths paths, UserRepository users, AuthService auth, AuditLogger audit, PasswordResetRepository passwordResets) {
         this.paths = paths;
         this.users = users;
         this.auth = auth;
         this.audit = audit;
+        this.passwordResets = passwordResets;
     }
 
     @Transactional
@@ -71,6 +84,47 @@ public class AuthenticationApplicationService {
         AuthService.Principal principal = requireCurrent(request);
         auth.logout(request);
         audit.event("USER_LOGOUT", java.util.Map.of("userId", principal.id()));
+    }
+
+    /** Prints a short-lived recovery code only to the server console; responses never reveal whether a user exists. */
+    @Transactional
+    public void requestPasswordReset(PasswordResetRequest request) {
+        String username = request == null ? "" : request.getUsername();
+        if (username == null || username.isBlank()) return;
+        UserEntity user = users.findByUsername(username.trim()).orElse(null);
+        if (user == null) return;
+        Instant now = Instant.now();
+        PasswordResetEntity current = passwordResets.findById(user.getId()).orElse(null);
+        if (current != null && Instant.parse(current.getRequestedAt()).plus(RESET_REQUEST_INTERVAL).isAfter(now)) {
+            audit.event("PASSWORD_RESET_REQUEST_RATE_LIMITED", java.util.Map.of("userId", user.getId()));
+            return;
+        }
+        byte[] bytes = new byte[18];
+        random.nextBytes(bytes);
+        String code = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        passwordResets.save(new PasswordResetEntity(user.getId(), auth.hash(code), now.plus(RESET_LIFETIME).toString(), now.toString()));
+        audit.event("PASSWORD_RESET_REQUESTED", java.util.Map.of("userId", user.getId()));
+        org.slf4j.LoggerFactory.getLogger(AuthenticationApplicationService.class).warn(
+                "PASSWORD RESET CODE username={} code={} expiresAt={}. Enter this code only in the FinTube reset-password form.",
+                user.getUsername(), code, now.plus(RESET_LIFETIME));
+    }
+
+    @Transactional
+    public void confirmPasswordReset(PasswordResetConfirmRequest request) {
+        if (request == null || request.getUsername() == null || request.getCode() == null || request.getNewPassword() == null
+                || request.getNewPassword().length() < 6) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid reset request");
+        }
+        UserEntity user = users.findByUsername(request.getUsername().trim()).orElse(null);
+        PasswordResetEntity reset = user == null ? null : passwordResets.findById(user.getId()).orElse(null);
+        if (reset == null || Instant.parse(reset.getExpiresAt()).isBefore(Instant.now()) || !auth.matches(request.getCode(), reset.getCodeHash())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid or expired reset code");
+        }
+        user.setPasswordHash(auth.hash(request.getNewPassword()));
+        user.setUpdatedAt(ApplicationClock.now());
+        passwordResets.delete(reset);
+        auth.logoutEverywhere(user.getId());
+        audit.event("PASSWORD_RESET_COMPLETED", java.util.Map.of("userId", user.getId()));
     }
 
     private AuthService.Principal requireCurrent(HttpServletRequest request) {

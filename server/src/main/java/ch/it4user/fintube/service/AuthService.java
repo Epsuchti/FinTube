@@ -65,6 +65,11 @@ public class AuthService {
             for (Cookie x : r.getCookies()) if ("FT_SESSION".equals(x.getName())) sessions.deleteByToken(x.getValue());
     }
 
+    @Transactional
+    public void logoutEverywhere(long userId) {
+        sessions.deleteAllByUserId(userId);
+    }
+
     public String slug(String username) {
         String s = username.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-").replaceAll("(^-|-$)", "");
         if (s.isBlank()) s = "user";

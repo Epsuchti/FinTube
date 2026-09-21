@@ -6,6 +6,8 @@ import ch.it4user.fintube.service.SessionCookieService;
 import ch.it4user.fintube.api.contract.AuthenticationApi;
 import ch.it4user.fintube.api.contract.model.AuthResult;
 import ch.it4user.fintube.api.contract.model.LoginRequest;
+import ch.it4user.fintube.api.contract.model.PasswordResetConfirmRequest;
+import ch.it4user.fintube.api.contract.model.PasswordResetRequest;
 import ch.it4user.fintube.api.contract.model.RegisterRequest;
 import ch.it4user.fintube.api.contract.model.Role;
 import org.springframework.http.ResponseEntity;
@@ -40,6 +42,18 @@ public class AuthenticationContractController implements AuthenticationApi {
     public ResponseEntity<Void> logout() {
         authentication.logout(requestContext);
         cookies.clear(response);
+        return ResponseEntity.ok().build();
+    }
+
+    @Override
+    public ResponseEntity<Void> requestPasswordReset(PasswordResetRequest request) {
+        authentication.requestPasswordReset(request);
+        return ResponseEntity.accepted().build();
+    }
+
+    @Override
+    public ResponseEntity<Void> confirmPasswordReset(PasswordResetConfirmRequest request) {
+        authentication.confirmPasswordReset(request);
         return ResponseEntity.ok().build();
     }
 
