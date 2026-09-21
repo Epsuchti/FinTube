@@ -5,6 +5,8 @@ import ch.it4user.fintube.persistence.entities.VideoEntity;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -65,6 +67,18 @@ class YouTubeSyncServiceTest {
         for (int i = 0; i < 6; i++) assertThat(YouTubeSyncService.acceptInitialVideo(regular, counts, limits)).isTrue();
         assertThat(YouTubeSyncService.limitsFilled(counts, limits)).isTrue();
         assertThat(counts).containsExactly(20, 0, 0);
+    }
+
+    @Test
+    void retainsReplacementForSubscriberWhoWatchedANewestVideo() {
+        VideoEntity newest = video("video-new", "2026-09-21T00:00:00Z", 0, 0);
+        VideoEntity middle = video("video-middle", "2026-09-20T00:00:00Z", 0, 0);
+        VideoEntity oldest = video("video-old", "2026-09-19T00:00:00Z", 0, 0);
+
+        assertThat(YouTubeSyncService.retainedVideoIdsForWatchState(
+                List.of(newest, middle, oldest), 2, 0, 0, List.of(7L),
+                Map.of(7L, Set.of("video-new"))))
+                .containsExactlyInAnyOrder("video-new", "video-middle", "video-old");
     }
 
     private static VideoEntity video(String id, String published, int isShort, int isLiveStream) {

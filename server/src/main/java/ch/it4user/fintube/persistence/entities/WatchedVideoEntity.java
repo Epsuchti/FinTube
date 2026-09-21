@@ -16,6 +16,12 @@ public class WatchedVideoEntity {
   @Column(name = "watched_at", nullable = false, length = 64)
   private String watchedAt;
 
+  @Column(name = "channel_id", length = 255)
+  private String channelId;
+
+  @Column(name = "category", nullable = false)
+  private int category;
+
   @Column(name = "youtube_marked_at", length = 64)
   private String youtubeMarkedAt;
 
@@ -25,13 +31,17 @@ public class WatchedVideoEntity {
 
   protected WatchedVideoEntity() { }
 
-  public WatchedVideoEntity(UserVideoId id, String watchedAt) {
+  public WatchedVideoEntity(UserVideoId id, String channelId, int category, String watchedAt) {
     this.id = id;
+    this.channelId = channelId;
+    this.category = category;
     this.watchedAt = watchedAt;
   }
 
   public UserVideoId getId() { return id; }
   public String getWatchedAt() { return watchedAt; }
+  public String getChannelId() { return channelId; }
+  public int getCategory() { return category; }
   public String getYoutubeMarkedAt() { return youtubeMarkedAt; }
   public String getYoutubeMarkError() { return youtubeMarkError; }
 

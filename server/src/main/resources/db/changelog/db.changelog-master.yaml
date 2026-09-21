@@ -37,3 +37,5 @@ databaseChangeLog:
       file: db/changelog/019-watched-video-sync.yaml
   - include:
       file: db/changelog/020-youtube-watch-cookie.yaml
+  - include:
+      file: db/changelog/021-watched-video-retention-context.yaml

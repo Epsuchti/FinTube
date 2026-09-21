@@ -6,10 +6,13 @@ import ch.it4user.fintube.core.SettingsService;
 import ch.it4user.fintube.media.ProxiedHttpClient;
 import ch.it4user.fintube.persistence.entities.UserEntity;
 import ch.it4user.fintube.persistence.entities.UserVideoEntity;
+import ch.it4user.fintube.persistence.entities.VideoEntity;
 import ch.it4user.fintube.persistence.entities.WatchedVideoEntity;
 import ch.it4user.fintube.persistence.repositories.UserRepository;
 import ch.it4user.fintube.persistence.repositories.UserVideoRepository;
+import ch.it4user.fintube.persistence.repositories.VideoRepository;
 import ch.it4user.fintube.persistence.repositories.WatchedVideoRepository;
+import ch.it4user.fintube.persistence.repositories.YouTubeChannelRepository;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
@@ -42,12 +45,15 @@ public class WatchedVideoSyncService {
   private final UserVideoRepository userVideos;
   private final WatchedVideoRepository watchedVideos;
   private final UserRepository users;
+  private final VideoRepository videos;
+  private final YouTubeChannelRepository channels;
   private final ProxiedHttpClient externalHttp;
 
   public WatchedVideoSyncService(SettingsService settings, ApplicationPaths paths,
                                  JellyfinClient jellyfinClient, JellyfinSyncService jellyfinSync,
                                  UserVideoRepository userVideos, WatchedVideoRepository watchedVideos,
-                                 UserRepository users, ProxiedHttpClient externalHttp) {
+                                 UserRepository users, VideoRepository videos,
+                                 YouTubeChannelRepository channels, ProxiedHttpClient externalHttp) {
     this.settings = settings;
     this.paths = paths;
     this.jellyfinClient = jellyfinClient;
@@ -55,6 +61,8 @@ public class WatchedVideoSyncService {
     this.userVideos = userVideos;
     this.watchedVideos = watchedVideos;
     this.users = users;
+    this.videos = videos;
+    this.channels = channels;
     this.externalHttp = externalHttp;
   }
 
@@ -78,8 +86,11 @@ public class WatchedVideoSyncService {
       UserVideoEntity link = matchingLink(item, links, roots);
       if (link == null) continue;
       try {
+        VideoEntity video = videos.findById(link.getId().getVideoId()).orElse(null);
+        if (video == null) continue;
         watchedVideos.findById(link.getId()).orElseGet(() ->
-            watchedVideos.save(new WatchedVideoEntity(link.getId(), ApplicationClock.now())));
+            watchedVideos.save(new WatchedVideoEntity(link.getId(), video.getChannelId(),
+                category(video), ApplicationClock.now())));
         Path root = roots.get(link.getId().getUserId());
         Path libraryPath = safeLibraryPath(link, root);
         if (libraryPath != null) {
@@ -88,6 +99,7 @@ public class WatchedVideoSyncService {
         }
         userVideos.delete(link);
         links.remove(link);
+        resetChannelCursor(video.getChannelId());
         removed++;
         LOG.info("event=WATCHED_VIDEO_REMOVED userId={} video={} jellyfinItem={}",
             link.getId().getUserId(), link.getId().getVideoId(), item.id());
@@ -97,6 +109,18 @@ public class WatchedVideoSyncService {
       }
     }
     if (removed > 0) jellyfinSync.afterLibraryDeletion();
+  }
+
+  private void resetChannelCursor(String channelId) {
+    channels.findById(channelId).ifPresent(channel -> {
+      channel.setLastSyncPublishedAt(null);
+      channels.save(channel);
+    });
+  }
+
+  private static int category(VideoEntity video) {
+    if (video.getIsLiveStream() != 0) return 2;
+    return video.getIsShort() != 0 ? 1 : 0;
   }
 
   private void markPendingOnYouTube(Map<String, String> current) {

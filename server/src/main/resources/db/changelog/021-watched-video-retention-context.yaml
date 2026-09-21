@@ -1,0 +1,16 @@
+databaseChangeLog:
+  - changeSet:
+      id: 021-watched-video-retention-context
+      author: fintube
+      changes:
+        - addColumn:
+            tableName: watched_videos
+            columns:
+              - column: {name: channel_id, type: varchar(255)}
+              - column: {name: category, type: integer, defaultValueNumeric: 0, constraints: {nullable: false}}
+        - createIndex:
+            tableName: watched_videos
+            indexName: idx_watched_videos_channel_user
+            columns:
+              - column: {name: channel_id}
+              - column: {name: user_id}

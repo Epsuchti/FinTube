@@ -9,6 +9,7 @@ import ch.it4user.fintube.persistence.entities.UserEntity;
 import ch.it4user.fintube.persistence.repositories.UserRepository;
 import ch.it4user.fintube.persistence.entities.UserVideoEntity;
 import ch.it4user.fintube.persistence.entities.UserVideoId;
+import ch.it4user.fintube.persistence.entities.WatchedVideoEntity;
 import ch.it4user.fintube.persistence.repositories.UserVideoRepository;
 import ch.it4user.fintube.persistence.repositories.WatchedVideoRepository;
 import ch.it4user.fintube.persistence.entities.VideoEntity;
@@ -138,11 +139,12 @@ public class YouTubeSyncService {
       int regularLimit = initialImportCount(channelEntity.getChannelId(), currentSettings);
       int shortLimit = initialShortImportCount(channelEntity);
       int liveStreamLimit = initialLiveStreamImportCount(channelEntity);
+      int[] discoveryLimits = expandedDiscoveryLimits(channel, regularLimit, shortLimit, liveStreamLimit);
       int count = 0;
       String newestPublished = cursor;
       if (initial) {
-        InitialDiscovery discovery = discoverInitialVideos(channelEntity, key, regularLimit,
-            shortLimit, liveStreamLimit);
+        InitialDiscovery discovery = discoverInitialVideos(channelEntity, key, discoveryLimits[0],
+            discoveryLimits[1], discoveryLimits[2]);
         newestPublished = discovery.newestPublished();
         for (JsonNode video : discovery.videos()) {
           if (upsertVideo(video, channel)) count++;
@@ -533,7 +535,7 @@ public class YouTubeSyncService {
   private int pruneChannel(String channel, int regularLimit, int shortLimit, int liveStreamLimit)
       throws Exception {
     List<VideoEntity> stored = videos.findByChannelIdOrderByPublishedAtDesc(channel);
-    Set<String> retained = retainedVideoIds(stored, regularLimit, shortLimit, liveStreamLimit);
+    Set<String> retained = retainedVideoIdsForSubscribers(channel, stored, regularLimit, shortLimit, liveStreamLimit);
     List<VideoEntity> obsolete = stored.stream()
         .filter(video -> !retained.contains(video.getVideoId()))
         .toList();
@@ -561,6 +563,65 @@ public class YouTubeSyncService {
       retained.add(video.getVideoId());
     }
     return retained;
+  }
+
+  /** Keep enough canonical rows that every subscriber can still see its configured unwatched window. */
+  private Set<String> retainedVideoIdsForSubscribers(String channel, List<VideoEntity> candidates,
+                                                       int regularLimit, int shortLimit,
+                                                       int liveStreamLimit) {
+    List<Long> userIds = subscriptions.findByChannelIdAndEnabled(channel, 1).stream()
+        .map(YouTubeSubscriptionEntity::getUserId).toList();
+    if (userIds.isEmpty()) return retainedVideoIds(candidates, regularLimit, shortLimit, liveStreamLimit);
+    Map<Long, Set<String>> watchedByUser = new HashMap<>();
+    for (WatchedVideoEntity watched : watchedVideos.findByChannelIdAndIdUserIdIn(channel, userIds)) {
+      watchedByUser.computeIfAbsent(watched.getId().getUserId(), ignored -> new HashSet<>())
+          .add(watched.getId().getVideoId());
+    }
+    return retainedVideoIdsForWatchState(candidates, regularLimit, shortLimit, liveStreamLimit,
+        userIds, watchedByUser);
+  }
+
+  static Set<String> retainedVideoIdsForWatchState(List<VideoEntity> candidates, int regularLimit,
+                                                     int shortLimit, int liveStreamLimit,
+                                                     List<Long> userIds,
+                                                     Map<Long, Set<String>> watchedByUser) {
+    Set<String> retained = retainedVideoIds(candidates, regularLimit, shortLimit, liveStreamLimit);
+    List<VideoEntity> ordered = new ArrayList<>(candidates);
+    ordered.sort(Comparator.comparing(VideoEntity::getPublishedAt,
+        Comparator.nullsLast(Comparator.reverseOrder())));
+    int[] limits = {Math.max(0, regularLimit), Math.max(0, shortLimit), Math.max(0, liveStreamLimit)};
+    for (Long userId : userIds) {
+      Set<String> watched = watchedByUser.getOrDefault(userId, Set.of());
+      int[] counts = new int[limits.length];
+      for (VideoEntity video : ordered) {
+        int category = category(video);
+        if (watched.contains(video.getVideoId()) || counts[category] >= limits[category]) continue;
+        counts[category]++;
+        retained.add(video.getVideoId());
+      }
+    }
+    return retained;
+  }
+
+  private int[] expandedDiscoveryLimits(String channel, int regularLimit, int shortLimit,
+                                        int liveStreamLimit) {
+    int[] base = {regularLimit, shortLimit, liveStreamLimit};
+    int[] expanded = {regularLimit, shortLimit, liveStreamLimit};
+    List<Long> userIds = subscriptions.findByChannelIdAndEnabled(channel, 1).stream()
+        .map(YouTubeSubscriptionEntity::getUserId).toList();
+    if (userIds.isEmpty()) return expanded;
+    Map<Long, int[]> watchedCounts = new HashMap<>();
+    for (WatchedVideoEntity watched : watchedVideos.findByChannelIdAndIdUserIdIn(channel, userIds)) {
+      int[] counts = watchedCounts.computeIfAbsent(watched.getId().getUserId(), ignored -> new int[3]);
+      int category = watched.getCategory();
+      if (category >= 0 && category < counts.length) counts[category]++;
+    }
+    for (int[] watched : watchedCounts.values()) {
+      for (int category = 0; category < expanded.length; category++) {
+        expanded[category] = Math.min(1000, Math.max(expanded[category], base[category] + watched[category]));
+      }
+    }
+    return expanded;
   }
 
   private void removeLibraryLinks(List<VideoEntity> obsolete) throws Exception {
