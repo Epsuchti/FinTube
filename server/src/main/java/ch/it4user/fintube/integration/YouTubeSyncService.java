@@ -38,6 +38,7 @@ import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -106,8 +107,9 @@ public class YouTubeSyncService {
 
   /**
    * Synchronize a canonical channel once for all enabled subscribers. The
-   * first run honors initial_channel_import_count; later runs use the
-   * persisted latest published timestamp and fetch only newer pages.
+   * configured import counts retain the newest regular videos, Shorts, and
+   * completed live streams. Later runs use the persisted latest published
+   * timestamp and fetch metadata only for IDs not already stored.
    */
   public int syncChannel(String channel, long userId) throws Exception {
     if (channel == null || channel.isBlank()) throw new IllegalArgumentException("channel is required");
@@ -138,37 +140,38 @@ public class YouTubeSyncService {
         ids.add(id);
         newestPublished = maxPublished(newestPublished, playlistPublishedAt(item));
       }
-      // Incremental playlist reads stop at the persisted cursor. Probe
-      // a bounded set of stale canonical rows as well, so a deleted/private
-      // video that disappeared from the API is eventually marked unavailable
-      // without re-importing an entire channel history on every run.
-      for (String stale : staleVideoIds(channel)) if (!ids.contains(stale)) ids.add(stale);
+      Set<String> existingIds = new HashSet<>();
+      for (VideoEntity video : videos.findAllById(ids)) existingIds.add(video.getVideoId());
+      List<String> metadataIds = ids.stream().filter(id -> !existingIds.contains(id)).toList();
+      int regularLimit = initialImportCount(channelEntity.getChannelId(), currentSettings);
+      int shortLimit = initialShortImportCount(channelEntity);
+      int liveStreamLimit = initialLiveStreamImportCount(channelEntity);
 
       Set<String> returned = new HashSet<>();
-      List<String> importedIds = new ArrayList<>();
       int[] categoryCounts = new int[3];
       int count = 0;
-      for (int start = 0; start < ids.size(); start += 50) {
-        int end = Math.min(ids.size(), start + 50);
-        String batch = String.join(",", ids.subList(start, end));
+      for (int start = 0; start < metadataIds.size(); start += 50) {
+        int end = Math.min(metadataIds.size(), start + 50);
+        String batch = String.join(",", metadataIds.subList(start, end));
         JsonNode details = request("https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,status,liveStreamingDetails&id="
             + enc(batch) + "&key=" + enc(key));
         for (JsonNode video : details.path("items")) {
           String videoId = video.path("id").asText();
           if (videoId.isBlank()) continue;
-          if (initial && !acceptedInitialCategory(video, channelEntity, categoryCounts, currentSettings)) continue;
           returned.add(videoId);
-          importedIds.add(videoId);
+          if (!initial && !acceptedIncrementalVideo(video, regularLimit, shortLimit, liveStreamLimit)) continue;
+          if (initial && !acceptedInitialCategory(video, channelEntity, categoryCounts, currentSettings)) continue;
           boolean newVideo = upsertVideo(video, channel);
           newestPublished = maxPublished(newestPublished, video.path("snippet").path("publishedAt").asText());
           if (newVideo) count++;
         }
       }
 
-      // A result can disappear between playlistItems.list and videos.list because it
-      // was deleted, made private, or rejected. Keep its metadata row but
-      // explicitly mark it unavailable instead of presenting it as playable.
-      markMissingAsUnavailable(channel, importedIds, returned);
+      // A candidate can disappear between playlistItems.list and videos.list because
+      // it was deleted, made private, or rejected.
+      markMissingAsUnavailable(channel, metadataIds, returned);
+      int removed = pruneChannel(channel, regularLimit, shortLimit, liveStreamLimit);
+      if (removed > 0) jellyfin.afterLibraryDeletion();
 
       String successAt = now();
       updateChannelSuccess(channel, successAt, newestPublished);
@@ -367,6 +370,14 @@ public class YouTubeSyncService {
     return categoryCounts[0]++ < initialImportCount(channel.getChannelId(), currentSettings);
   }
 
+  static boolean acceptedIncrementalVideo(JsonNode video, int regularLimit, int shortLimit,
+                                          int liveStreamLimit) {
+    int duration = duration(video.path("contentDetails").path("duration").asText());
+    if (isPastLiveStream(video)) return liveStreamLimit > 0;
+    if (isShort(video, duration)) return shortLimit > 0;
+    return regularLimit > 0;
+  }
+
   private static boolean isPastLiveStream(JsonNode video) {
     return !video.path("liveStreamingDetails").path("actualEndTime").asText("").isBlank();
   }
@@ -457,9 +468,73 @@ public class YouTubeSyncService {
     if (!entities.isEmpty()) videos.saveAll(entities);
   }
 
-  private List<String> staleVideoIds(String channel) {
-    String cutoff = Instant.now().minusSeconds(24 * 60 * 60L).toString();
-    return videos.findStaleVideoIds(channel, cutoff, PageRequest.of(0, 50));
+  private int pruneChannel(String channel, int regularLimit, int shortLimit, int liveStreamLimit)
+      throws Exception {
+    List<VideoEntity> stored = videos.findByChannelIdOrderByPublishedAtDesc(channel);
+    Set<String> retained = retainedVideoIds(stored, regularLimit, shortLimit, liveStreamLimit);
+    List<VideoEntity> obsolete = stored.stream()
+        .filter(video -> !retained.contains(video.getVideoId()))
+        .toList();
+    if (obsolete.isEmpty()) return 0;
+
+    removeLibraryLinks(obsolete);
+    videos.deleteAllInBatch(obsolete);
+    LOG.info("event=YOUTUBE_ROLLING_RETENTION_PRUNED channel={} removed={} regularLimit={} shortLimit={} liveStreamLimit={}",
+        channel, obsolete.size(), regularLimit, shortLimit, liveStreamLimit);
+    return obsolete.size();
+  }
+
+  static Set<String> retainedVideoIds(List<VideoEntity> candidates, int regularLimit,
+                                      int shortLimit, int liveStreamLimit) {
+    List<VideoEntity> ordered = new ArrayList<>(candidates);
+    ordered.sort(Comparator.comparing(VideoEntity::getPublishedAt,
+        Comparator.nullsLast(Comparator.reverseOrder())));
+    int[] limits = {Math.max(0, regularLimit), Math.max(0, shortLimit), Math.max(0, liveStreamLimit)};
+    int[] counts = new int[limits.length];
+    Set<String> retained = new HashSet<>();
+    for (VideoEntity video : ordered) {
+      int category = category(video);
+      if (counts[category] >= limits[category]) continue;
+      counts[category]++;
+      retained.add(video.getVideoId());
+    }
+    return retained;
+  }
+
+  private void removeLibraryLinks(List<VideoEntity> obsolete) throws Exception {
+    List<String> videoIds = obsolete.stream().map(VideoEntity::getVideoId).toList();
+    List<UserVideoEntity> links = userVideos.findByIdVideoIdIn(videoIds);
+    if (links.isEmpty()) return;
+
+    Set<Long> userIds = new HashSet<>();
+    for (UserVideoEntity link : links) userIds.add(link.getId().getUserId());
+    Map<Long, Path> userRoots = new HashMap<>();
+    for (UserEntity user : users.findAllById(userIds)) {
+      userRoots.put(user.getId(), paths.usersRoot.resolve(user.getFilesystemSlug()).toAbsolutePath().normalize());
+    }
+    List<LibraryPath> libraryPaths = new ArrayList<>();
+    for (UserVideoEntity link : links) {
+      Path root = userRoots.get(link.getId().getUserId());
+      String storedPath = link.getLibraryPath();
+      if (root == null || storedPath == null) continue;
+      Path candidate = Path.of(storedPath).toAbsolutePath().normalize();
+      if (candidate.startsWith(root) && !candidate.equals(root)) {
+        libraryPaths.add(new LibraryPath(candidate, root));
+      }
+    }
+    userVideos.deleteAllInBatch(links);
+    for (LibraryPath libraryPath : libraryPaths) {
+      deleteTreeSafely(libraryPath.path(), libraryPath.root());
+      deleteIfEmpty(libraryPath.path().getParent(), libraryPath.root());
+    }
+  }
+
+  private record LibraryPath(Path path, Path root) { }
+
+  private static int category(VideoEntity video) {
+    if (video.getIsLiveStream() != 0) return 2;
+    if (video.getIsShort() != 0) return 1;
+    return 0;
   }
 
   /** Link one canonical metadata row into one user's isolated Jellyfin tree. */

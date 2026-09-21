@@ -76,11 +76,11 @@
       </div>
       @if (editingId() === subscription.id) {
         <div class="subscription-editor">
-          <div class="editor-heading"><div><p class="eyebrow">CHANNEL SETTINGS</p><h4>Import and download behavior</h4></div><button class="link-button" type="button" (click)="cancelEdit()">Close</button></div>
+          <div class="editor-heading"><div><p class="eyebrow">CHANNEL SETTINGS</p><h4>Library and download limits</h4></div><button class="link-button" type="button" (click)="cancelEdit()">Close</button></div>
           <div class="editor-fields">
-            <label>Videos<input type="number" min="0" max="1000" [ngModel]="importCount(subscription)" (ngModelChange)="setImportCount(subscription, $event)" [disabled]="loading()"><small class="muted">Regular videos to import on the next reimport.</small></label>
-            <label>Shorts<input type="number" min="0" max="1000" [ngModel]="shortImportCount(subscription)" (ngModelChange)="setShortImportCount(subscription, $event)" [disabled]="loading()"><small class="muted">Shorts to import on the next reimport.</small></label>
-            <label>Past live streams<input type="number" min="0" max="1000" [ngModel]="liveStreamImportCount(subscription)" (ngModelChange)="setLiveStreamImportCount(subscription, $event)" [disabled]="loading()"><small class="muted">Completed live streams to import.</small></label>
+            <label>Videos<input type="number" min="0" max="1000" [ngModel]="importCount(subscription)" (ngModelChange)="setImportCount(subscription, $event)" [disabled]="loading()"><small class="muted">Keep this many newest regular videos.</small></label>
+            <label>Shorts<input type="number" min="0" max="1000" [ngModel]="shortImportCount(subscription)" (ngModelChange)="setShortImportCount(subscription, $event)" [disabled]="loading()"><small class="muted">Keep this many newest Shorts.</small></label>
+            <label>Past live streams<input type="number" min="0" max="1000" [ngModel]="liveStreamImportCount(subscription)" (ngModelChange)="setLiveStreamImportCount(subscription, $event)" [disabled]="loading()"><small class="muted">Keep this many newest completed live streams.</small></label>
             <label>Download newest videos<input type="number" min="0" max="1000" [ngModel]="downloadCount(subscription)" (ngModelChange)="setDownloadCount(subscription, $event)" [disabled]="loading()"><small class="muted">Prefetch this many regular videos into the shared cache.</small></label>
             <label>Download newest Shorts<input type="number" min="0" max="1000" [ngModel]="shortDownloadCount(subscription)" (ngModelChange)="setShortDownloadCount(subscription, $event)" [disabled]="loading()"><small class="muted">Prefetch this many Shorts into the shared cache.</small></label>
             <label>Download newest live streams<input type="number" min="0" max="1000" [ngModel]="liveStreamDownloadCount(subscription)" (ngModelChange)="setLiveStreamDownloadCount(subscription, $event)" [disabled]="loading()"><small class="muted">Prefetch this many completed live streams.</small></label>

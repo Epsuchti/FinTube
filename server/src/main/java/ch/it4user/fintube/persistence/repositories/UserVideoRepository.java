@@ -8,6 +8,8 @@ import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface UserVideoRepository extends JpaRepository<UserVideoEntity, UserVideoId> {
+  List<UserVideoEntity> findByIdVideoIdIn(Collection<String> videoIds);
+
   List<UserVideoEntity> findByIdUserIdAndIdVideoIdIn(Long userId, Collection<String> videoIds);
 
   long deleteByIdUserIdAndIdVideoIdIn(Long userId, Collection<String> videoIds);

@@ -75,15 +75,23 @@ public class JellyfinSyncService {
 
   /** Called after a user's .strm/.nfo/artwork files have been atomically created. */
   public void afterLibraryGeneration(String videoId, Path libraryPath, long durationSeconds) {
+    requestLibraryRefresh();
+    JellyfinClient.Configuration c = client.configuration();
+    if (!c.enabled() || !c.configured() || !c.runtimeSync()) return;
+    pending.put(pendingKey(videoId, libraryPath), new Pending(videoId, libraryPath, durationSeconds, 0));
+    scheduleRuntime(videoId, libraryPath, durationSeconds, 0, 2);
+  }
+
+  public void afterLibraryDeletion() {
+    requestLibraryRefresh();
+  }
+
+  private void requestLibraryRefresh() {
     JellyfinClient.Configuration c = client.configuration();
     if (!c.enabled() || !c.configured()) return;
     if (c.autoRefresh()) {
       if (refreshBatchDepth.get() > 0) refreshPending.set(true);
       else queueRefresh();
-    }
-    if (c.runtimeSync()) {
-      pending.put(pendingKey(videoId, libraryPath), new Pending(videoId, libraryPath, durationSeconds, 0));
-      scheduleRuntime(videoId, libraryPath, durationSeconds, 0, 2);
     }
   }
 
