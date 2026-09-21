@@ -14,6 +14,7 @@ import ch.it4user.fintube.core.ApplicationPaths;
 import ch.it4user.fintube.core.SettingsService;
 import ch.it4user.fintube.integration.JellyfinSyncService;
 import ch.it4user.fintube.integration.YouTubeSyncService;
+import ch.it4user.fintube.integration.WatchedVideoSyncService;
 import ch.it4user.fintube.media.ProxiedHttpClient;
 import ch.it4user.fintube.persistence.entities.UserVideoEntity;
 import ch.it4user.fintube.persistence.repositories.LibraryVideoRepository;
@@ -77,6 +78,7 @@ public class LibraryApplicationService {
     private final AuthorizationService authorization;
     private final YouTubeSyncService sync;
     private final JellyfinSyncService jellyfin;
+    private final WatchedVideoSyncService watched;
     private final UserYouTubeApiKeyService youtubeApiKeys;
     private final AuditLogger audit;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -91,6 +93,7 @@ public class LibraryApplicationService {
                                      AuthorizationService authorization,
                                      YouTubeSyncService sync,
                                      JellyfinSyncService jellyfin,
+                                     WatchedVideoSyncService watched,
                                      AuditLogger audit,
                                      UserYouTubeApiKeyService youtubeApiKeys,
                                      ProxiedHttpClient externalHttp) {
@@ -103,6 +106,7 @@ public class LibraryApplicationService {
         this.authorization = authorization;
         this.sync = sync;
         this.jellyfin = jellyfin;
+        this.watched = watched;
         this.audit = audit;
         this.youtubeApiKeys = youtubeApiKeys;
         this.externalHttp = externalHttp;
@@ -250,6 +254,7 @@ public class LibraryApplicationService {
             audit.event("SUBSCRIPTION_REFRESH_STARTED", Map.of("userId", principal.id(), "subscriptionId", id, "channelId", channel));
             int discovered;
             try {
+                watched.reconcile();
                 discovered = sync.sync(channel, principal.id());
             } catch (Exception e) {
                 LOG.error("Subscription refresh failed for subscriptionId={} channelId={}", id, channel, e);
@@ -266,6 +271,7 @@ public class LibraryApplicationService {
             requireYouTubeApiKey(principal.id());
             int discovered = 0;
             try (JellyfinSyncService.RefreshBatch ignored = jellyfin.beginRefreshBatch()) {
+                watched.reconcile();
                 for (YouTubeSubscriptionEntity subscription : subscriptions.findByUserIdAndEnabled(principal.id(), 1)) {
                     try {
                         discovered += sync.sync(subscription.getChannelId(), principal.id());

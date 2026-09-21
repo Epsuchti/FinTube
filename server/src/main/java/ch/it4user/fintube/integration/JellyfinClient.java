@@ -61,6 +61,10 @@ public class JellyfinClient {
 
   public record Item(String id, String path, long runtimeTicks, String videoId) {}
 
+  public record PlayedItem(String id, String path, String videoId) {}
+
+  public record PlayedItems(boolean success, List<PlayedItem> items, String message) {}
+
   public Configuration configuration() {
     try {
       Map<String, String> s = settings();
@@ -133,6 +137,61 @@ public class JellyfinClient {
     } catch (Exception e) {
       return new Operation(false, 0, "Jellyfin is unreachable");
     }
+  }
+
+  /** Return movies marked played for one configured Jellyfin user (id or exact name). */
+  public PlayedItems playedItems(String configuredUser) {
+    Configuration c = configuration();
+    if (!c.enabled()) return new PlayedItems(false, List.of(), "Jellyfin integration is disabled");
+    if (!c.configured()) return new PlayedItems(false, List.of(), "Jellyfin URL is not configured");
+    if (configuredUser == null || configuredUser.isBlank()) {
+      return new PlayedItems(false, List.of(), "Jellyfin watched user is not configured");
+    }
+    try {
+      String userId = resolveUserId(c, configuredUser.trim());
+      if (userId.isBlank()) {
+        return new PlayedItems(false, List.of(), "Jellyfin user was not found");
+      }
+      List<PlayedItem> result = new ArrayList<>();
+      int start = 0;
+      int pageSize = 200;
+      while (true) {
+        String query = "/Users/" + encPath(userId)
+            + "/Items?Recursive=true&IsPlayed=true&IncludeItemTypes=Movie"
+            + "&Fields=Path,ProviderIds&StartIndex=" + start + "&Limit=" + pageSize;
+        HttpResponse<String> r = request(c, "GET", query, "");
+        if (r.statusCode() / 100 != 2) {
+          return new PlayedItems(false, List.of(), operationFailureMessage(r.statusCode()));
+        }
+        JsonNode root = json.readTree(r.body());
+        JsonNode items = root.path("Items");
+        if (!items.isArray()) break;
+        for (JsonNode item : items) {
+          result.add(new PlayedItem(item.path("Id").asText(""), item.path("Path").asText(""),
+              providerId(item.path("ProviderIds"))));
+        }
+        int returned = items.size();
+        start += returned;
+        int total = root.path("TotalRecordCount").asInt(start);
+        if (returned == 0 || start >= total) break;
+      }
+      return new PlayedItems(true, List.copyOf(result), "ok");
+    } catch (Exception e) {
+      return new PlayedItems(false, List.of(), "Jellyfin is unreachable");
+    }
+  }
+
+  private String resolveUserId(Configuration c, String configuredUser) throws Exception {
+    HttpResponse<String> r = request(c, "GET", "/Users", "");
+    if (r.statusCode() / 100 != 2) return "";
+    JsonNode users = json.readTree(r.body());
+    if (!users.isArray()) return "";
+    for (JsonNode user : users) {
+      String id = user.path("Id").asText("");
+      String name = user.path("Name").asText("");
+      if (configuredUser.equals(id) || configuredUser.equalsIgnoreCase(name)) return id;
+    }
+    return "";
   }
 
   /**

@@ -1,0 +1,24 @@
+databaseChangeLog:
+  - changeSet:
+      id: 020-youtube-watch-cookie
+      author: fintube
+      changes:
+        - sql:
+            sql: |
+              INSERT INTO settings (key, value, secret, updated_at)
+              SELECT 'youtube_watch_cookie_file', '', 1, '1970-01-01T00:00:00Z'
+              WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'youtube_watch_cookie_file');
+              UPDATE youtube_channels c
+                 SET last_sync_published_at = NULL
+               WHERE (SELECT COUNT(*) FROM videos v
+                       WHERE v.channel_id = c.channel_id AND v.is_short = 0 AND v.is_live_stream = 0)
+                     < COALESCE(c.initial_import_count,
+                         CAST((SELECT value FROM settings WHERE key = 'initial_channel_import_count') AS INTEGER), 20)
+                  OR (SELECT COUNT(*) FROM videos v
+                       WHERE v.channel_id = c.channel_id AND v.is_short = 1 AND v.is_live_stream = 0)
+                     < COALESCE(c.short_import_count,
+                         CAST((SELECT value FROM settings WHERE key = 'initial_short_import_count') AS INTEGER), 0)
+                  OR (SELECT COUNT(*) FROM videos v
+                       WHERE v.channel_id = c.channel_id AND v.is_live_stream = 1)
+                     < COALESCE(c.live_stream_import_count,
+                         CAST((SELECT value FROM settings WHERE key = 'initial_live_stream_import_count') AS INTEGER), 0);

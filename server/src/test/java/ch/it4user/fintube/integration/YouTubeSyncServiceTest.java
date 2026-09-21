@@ -51,6 +51,22 @@ class YouTubeSyncServiceTest {
                 .containsExactlyInAnyOrder("video-new", "short-new", "live-new");
     }
 
+    @Test
+    void initialDiscoveryKeepsPagingUntilRegularVideoLimitIsFilled() throws Exception {
+        int[] counts = new int[3];
+        int[] limits = {20, 0, 0};
+        var regular = JSON.readTree("{\"contentDetails\":{\"duration\":\"PT20M\"},\"snippet\":{}}");
+        var shortVideo = JSON.readTree("{\"contentDetails\":{\"duration\":\"PT1M\"},\"snippet\":{}}");
+
+        for (int i = 0; i < 14; i++) assertThat(YouTubeSyncService.acceptInitialVideo(regular, counts, limits)).isTrue();
+        for (int i = 0; i < 6; i++) assertThat(YouTubeSyncService.acceptInitialVideo(shortVideo, counts, limits)).isFalse();
+        assertThat(YouTubeSyncService.limitsFilled(counts, limits)).isFalse();
+
+        for (int i = 0; i < 6; i++) assertThat(YouTubeSyncService.acceptInitialVideo(regular, counts, limits)).isTrue();
+        assertThat(YouTubeSyncService.limitsFilled(counts, limits)).isTrue();
+        assertThat(counts).containsExactly(20, 0, 0);
+    }
+
     private static VideoEntity video(String id, String published, int isShort, int isLiveStream) {
         return new VideoEntity(id, "channel", id, "", published, 60, isShort, isLiveStream,
                 "", "AVAILABLE", published);

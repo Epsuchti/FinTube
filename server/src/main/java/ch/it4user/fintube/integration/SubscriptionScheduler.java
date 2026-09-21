@@ -20,15 +20,17 @@ public class SubscriptionScheduler {
   private final YouTubeSyncService sync;
   private final UserYouTubeApiKeyService youtubeApiKeys;
   private final JellyfinSyncService jellyfin;
+  private final WatchedVideoSyncService watched;
 
   SubscriptionScheduler(SettingsService settings, YouTubeSubscriptionRepository subscriptions,
                         YouTubeSyncService sync, UserYouTubeApiKeyService youtubeApiKeys,
-                        JellyfinSyncService jellyfin) {
+                        JellyfinSyncService jellyfin, WatchedVideoSyncService watched) {
     this.settings = settings;
     this.subscriptions = subscriptions;
     this.sync = sync;
     this.youtubeApiKeys = youtubeApiKeys;
     this.jellyfin = jellyfin;
+    this.watched = watched;
   }
 
   @Scheduled(fixedDelayString = "PT15M")
@@ -37,6 +39,7 @@ public class SubscriptionScheduler {
     String cutoff = Instant.now().minusSeconds(minutes * 60L).toString();
     try {
       try (JellyfinSyncService.RefreshBatch ignored = jellyfin.beginRefreshBatch()) {
+        watched.reconcile();
         Set<String> syncedChannels = new HashSet<>();
         for (YouTubeSubscriptionRepository.DueSubscriptionView due : subscriptions.findDueSubscriptions(cutoff)) {
           String channel = due.getChannelId();

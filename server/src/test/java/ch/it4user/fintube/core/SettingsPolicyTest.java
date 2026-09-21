@@ -10,17 +10,22 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class SettingsPolicyTest {
     @Test
     void acceptsSupportedValuesAndClassifiesSecrets() {
-        SettingsPolicy.validate(Map.of(
-                "stream_quality", "1080",
-                "cache_retention_days", "30",
-                "cache_cleanup_interval_minutes", "360",
-                "background_fill_on_playback", "false",
-                "public_base_url", "https://bridge.example.test",
-                "jellyfin_url", "http://jellyfin:8096",
-                "jellyfin_request_timeout_seconds", "10",
-                "jellyfin_api_key", "api-key"));
+        SettingsPolicy.validate(Map.ofEntries(
+                Map.entry("stream_quality", "1080"),
+                Map.entry("cache_retention_days", "30"),
+                Map.entry("cache_cleanup_interval_minutes", "360"),
+                Map.entry("background_fill_on_playback", "false"),
+                Map.entry("jellyfin_remove_watched", "true"),
+                Map.entry("jellyfin_watched_user", "Eric"),
+                Map.entry("youtube_mark_watched", "true"),
+                Map.entry("youtube_watch_cookie_file", "/data/youtube-history.cookies.txt"),
+                Map.entry("public_base_url", "https://bridge.example.test"),
+                Map.entry("jellyfin_url", "http://jellyfin:8096"),
+                Map.entry("jellyfin_request_timeout_seconds", "10"),
+                Map.entry("jellyfin_api_key", "api-key")));
 
         assertThat(SettingsPolicy.isSecret("jellyfin_api_key")).isTrue();
+        assertThat(SettingsPolicy.isSecret("youtube_watch_cookie_file")).isTrue();
         assertThat(SettingsPolicy.isSecret("stream_quality")).isFalse();
     }
 

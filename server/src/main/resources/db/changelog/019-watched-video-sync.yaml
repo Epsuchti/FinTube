@@ -1,0 +1,25 @@
+databaseChangeLog:
+  - changeSet:
+      id: 019-watched-video-sync
+      author: fintube
+      changes:
+        - createTable:
+            tableName: watched_videos
+            columns:
+              - column: {name: user_id, type: bigint, constraints: {primaryKey: true, primaryKeyName: pk_watched_videos, nullable: false}}
+              - column: {name: video_id, type: varchar(255), constraints: {primaryKey: true, primaryKeyName: pk_watched_videos, nullable: false}}
+              - column: {name: watched_at, type: varchar(64), constraints: {nullable: false}}
+              - column: {name: youtube_marked_at, type: varchar(64)}
+              - column: {name: youtube_mark_error, type: clob}
+        - addForeignKeyConstraint: {baseTableName: watched_videos, baseColumnNames: user_id, constraintName: fk_watched_videos_user, referencedTableName: users, referencedColumnNames: id, onDelete: CASCADE}
+        - sql:
+            sql: |
+              INSERT INTO settings (key, value, secret, updated_at)
+              SELECT 'jellyfin_remove_watched', 'false', 0, '1970-01-01T00:00:00Z'
+              WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'jellyfin_remove_watched');
+              INSERT INTO settings (key, value, secret, updated_at)
+              SELECT 'jellyfin_watched_user', '', 0, '1970-01-01T00:00:00Z'
+              WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'jellyfin_watched_user');
+              INSERT INTO settings (key, value, secret, updated_at)
+              SELECT 'youtube_mark_watched', 'false', 0, '1970-01-01T00:00:00Z'
+              WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'youtube_mark_watched');

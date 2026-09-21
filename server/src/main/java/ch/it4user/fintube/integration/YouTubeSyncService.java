@@ -10,6 +10,7 @@ import ch.it4user.fintube.persistence.repositories.UserRepository;
 import ch.it4user.fintube.persistence.entities.UserVideoEntity;
 import ch.it4user.fintube.persistence.entities.UserVideoId;
 import ch.it4user.fintube.persistence.repositories.UserVideoRepository;
+import ch.it4user.fintube.persistence.repositories.WatchedVideoRepository;
 import ch.it4user.fintube.persistence.entities.VideoEntity;
 import ch.it4user.fintube.persistence.repositories.VideoRepository;
 import ch.it4user.fintube.persistence.entities.YouTubeChannelEntity;
@@ -68,6 +69,7 @@ public class YouTubeSyncService {
   final YouTubeSubscriptionRepository subscriptions;
   final VideoRepository videos;
   final UserVideoRepository userVideos;
+  final WatchedVideoRepository watchedVideos;
   final UserRepository users;
   final ApplicationPaths paths;
   final JellyfinSyncService jellyfin;
@@ -79,7 +81,8 @@ public class YouTubeSyncService {
 
   public YouTubeSyncService(SettingsService settings, YouTubeChannelRepository channels,
                             YouTubeSubscriptionRepository subscriptions, VideoRepository videos,
-                            UserVideoRepository userVideos, UserRepository users,
+                            UserVideoRepository userVideos, WatchedVideoRepository watchedVideos,
+                            UserRepository users,
                             ApplicationPaths paths, JellyfinSyncService jellyfin,
                             BackgroundFillService filler, UserYouTubeApiKeyService youtubeApiKeys,
                             ProxiedHttpClient externalHttp) {
@@ -88,6 +91,7 @@ public class YouTubeSyncService {
     this.subscriptions = subscriptions;
     this.videos = videos;
     this.userVideos = userVideos;
+    this.watchedVideos = watchedVideos;
     this.users = users;
     this.paths = paths;
     this.jellyfin = jellyfin;
@@ -131,45 +135,48 @@ public class YouTubeSyncService {
       ensureChannelMetadata(channelEntity, key);
       String cursor = channelEntity.getLastSyncPublishedAt();
       boolean initial = cursor == null || cursor.isBlank();
-      List<JsonNode> playlistItems = discover(channelEntity, key, cursor, currentSettings);
-      List<String> ids = new ArrayList<>();
-      String newestPublished = cursor;
-      for (JsonNode item : playlistItems) {
-        String id = playlistVideoId(item);
-        if (id.isBlank() || ids.contains(id)) continue;
-        ids.add(id);
-        newestPublished = maxPublished(newestPublished, playlistPublishedAt(item));
-      }
-      Set<String> existingIds = new HashSet<>();
-      for (VideoEntity video : videos.findAllById(ids)) existingIds.add(video.getVideoId());
-      List<String> metadataIds = ids.stream().filter(id -> !existingIds.contains(id)).toList();
       int regularLimit = initialImportCount(channelEntity.getChannelId(), currentSettings);
       int shortLimit = initialShortImportCount(channelEntity);
       int liveStreamLimit = initialLiveStreamImportCount(channelEntity);
-
-      Set<String> returned = new HashSet<>();
-      int[] categoryCounts = new int[3];
       int count = 0;
-      for (int start = 0; start < metadataIds.size(); start += 50) {
-        int end = Math.min(metadataIds.size(), start + 50);
-        String batch = String.join(",", metadataIds.subList(start, end));
-        JsonNode details = request("https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,status,liveStreamingDetails&id="
-            + enc(batch) + "&key=" + enc(key));
-        for (JsonNode video : details.path("items")) {
-          String videoId = video.path("id").asText();
-          if (videoId.isBlank()) continue;
-          returned.add(videoId);
-          if (!initial && !acceptedIncrementalVideo(video, regularLimit, shortLimit, liveStreamLimit)) continue;
-          if (initial && !acceptedInitialCategory(video, channelEntity, categoryCounts, currentSettings)) continue;
-          boolean newVideo = upsertVideo(video, channel);
-          newestPublished = maxPublished(newestPublished, video.path("snippet").path("publishedAt").asText());
-          if (newVideo) count++;
+      String newestPublished = cursor;
+      if (initial) {
+        InitialDiscovery discovery = discoverInitialVideos(channelEntity, key, regularLimit,
+            shortLimit, liveStreamLimit);
+        newestPublished = discovery.newestPublished();
+        for (JsonNode video : discovery.videos()) {
+          if (upsertVideo(video, channel)) count++;
         }
-      }
+      } else {
+        List<JsonNode> playlistItems = discoverIncremental(channelEntity, key, cursor);
+        List<String> ids = new ArrayList<>();
+        for (JsonNode item : playlistItems) {
+          String id = playlistVideoId(item);
+          if (id.isBlank() || ids.contains(id)) continue;
+          ids.add(id);
+          newestPublished = maxPublished(newestPublished, playlistPublishedAt(item));
+        }
+        Set<String> existingIds = new HashSet<>();
+        for (VideoEntity video : videos.findAllById(ids)) existingIds.add(video.getVideoId());
+        List<String> metadataIds = ids.stream().filter(id -> !existingIds.contains(id)).toList();
+        Set<String> returned = new HashSet<>();
+        for (int start = 0; start < metadataIds.size(); start += 50) {
+          int end = Math.min(metadataIds.size(), start + 50);
+          String batch = String.join(",", metadataIds.subList(start, end));
+          JsonNode details = videoDetails(batch, key);
+          for (JsonNode video : details.path("items")) {
+            String videoId = video.path("id").asText();
+            if (videoId.isBlank()) continue;
+            returned.add(videoId);
+            if (!acceptedIncrementalVideo(video, regularLimit, shortLimit, liveStreamLimit)) continue;
+            if (upsertVideo(video, channel)) count++;
+          }
+        }
 
-      // A candidate can disappear between playlistItems.list and videos.list because
-      // it was deleted, made private, or rejected.
-      markMissingAsUnavailable(channel, metadataIds, returned);
+        // A candidate can disappear between playlistItems.list and videos.list because
+        // it was deleted, made private, or rejected.
+        markMissingAsUnavailable(channel, metadataIds, returned);
+      }
       int removed = pruneChannel(channel, regularLimit, shortLimit, liveStreamLimit);
       if (removed > 0) jellyfin.afterLibraryDeletion();
 
@@ -249,43 +256,110 @@ public class YouTubeSyncService {
     return true;
   }
 
-  private List<JsonNode> discover(YouTubeChannelEntity channelEntity, String key, String cursor,
-                                  Map<String, String> settings) throws Exception {
-    boolean initial = cursor == null || cursor.isBlank();
-    int initialLimit = initialImportCount(channelEntity.getChannelId(), settings)
-        + initialShortImportCount(channelEntity)
-        + initialLiveStreamImportCount(channelEntity);
-    String playlistId = channelEntity.getUploadsPlaylistId();
-    if (playlistId == null || playlistId.isBlank()) {
-      playlistId = uploadsPlaylist(channelEntity.getChannelId(), key);
-      channelEntity.setUploadsPlaylistId(playlistId);
-      channelEntity.setUpdatedAt(now());
-      channels.save(channelEntity);
-    }
+  private record InitialDiscovery(List<JsonNode> videos, String newestPublished) { }
+
+  private InitialDiscovery discoverInitialVideos(YouTubeChannelEntity channelEntity, String key,
+                                                 int regularLimit, int shortLimit,
+                                                 int liveStreamLimit) throws Exception {
+    int[] limits = {regularLimit, shortLimit, liveStreamLimit};
+    if (limitsFilled(new int[3], limits)) return new InitialDiscovery(List.of(), null);
+    String playlistId = uploadsPlaylistId(channelEntity, key);
+    List<JsonNode> selected = new ArrayList<>();
+    int[] counts = new int[3];
+    String newestPublished = null;
+    String page = null;
+    int pages = 0;
+    do {
+      StringBuilder url = playlistItemsUrl(playlistId, key, 50);
+      if (page != null && !page.isBlank()) url.append("&pageToken=").append(enc(page));
+      JsonNode root = request(url.toString());
+      List<JsonNode> playlistItems = new ArrayList<>();
+      List<String> ids = new ArrayList<>();
+      for (JsonNode item : root.path("items")) {
+        String id = playlistVideoId(item);
+        if (id.isBlank() || ids.contains(id)) continue;
+        ids.add(id);
+        playlistItems.add(item);
+        newestPublished = maxPublished(newestPublished, playlistPublishedAt(item));
+      }
+      Map<String, JsonNode> detailsById = new HashMap<>();
+      if (!ids.isEmpty()) {
+        for (JsonNode video : videoDetails(String.join(",", ids), key).path("items")) {
+          String id = video.path("id").asText("");
+          if (!id.isBlank()) detailsById.put(id, video);
+        }
+      }
+      for (JsonNode item : playlistItems) {
+        JsonNode video = detailsById.get(playlistVideoId(item));
+        if (video == null) continue;
+        if (acceptInitialVideo(video, counts, limits)) selected.add(video);
+      }
+      page = root.path("nextPageToken").asText("");
+      pages++;
+    } while (!limitsFilled(counts, limits) && !page.isBlank() && pages < MAX_INCREMENTAL_PAGES);
+    return new InitialDiscovery(List.copyOf(selected), newestPublished);
+  }
+
+  private List<JsonNode> discoverIncremental(YouTubeChannelEntity channelEntity, String key,
+                                             String cursor) throws Exception {
+    String playlistId = uploadsPlaylistId(channelEntity, key);
     List<JsonNode> items = new ArrayList<>();
     String page = null;
     int pages = 0;
     do {
-      if (initial && initialLimit == 0) return items;
-      int remaining = initial ? Math.max(1, initialLimit - items.size()) : 50;
-      StringBuilder url = new StringBuilder("https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=")
-          .append(enc(playlistId)).append("&maxResults=")
-          .append(Math.min(50, remaining))
-          .append("&key=").append(enc(key));
+      StringBuilder url = playlistItemsUrl(playlistId, key, 50);
       if (page != null && !page.isBlank()) url.append("&pageToken=").append(enc(page));
       JsonNode root = request(url.toString());
       boolean reachedCursor = false;
       for (JsonNode item : root.path("items")) {
         String published = playlistPublishedAt(item);
-        if (initial || newerOrEqual(published, cursor)) items.add(item);
-        if (!initial && olderThan(published, cursor)) reachedCursor = true;
+        if (newerOrEqual(published, cursor)) items.add(item);
+        if (olderThan(published, cursor)) reachedCursor = true;
       }
       page = root.path("nextPageToken").asText("");
       pages++;
-      if (!initial && reachedCursor) break;
-    } while (page != null && !page.isBlank() && pages < MAX_INCREMENTAL_PAGES
-        && (!initial || items.size() < initialLimit));
+      if (reachedCursor) break;
+    } while (page != null && !page.isBlank() && pages < MAX_INCREMENTAL_PAGES);
     return items;
+  }
+
+  private String uploadsPlaylistId(YouTubeChannelEntity channelEntity, String key) throws Exception {
+    String playlistId = channelEntity.getUploadsPlaylistId();
+    if (playlistId != null && !playlistId.isBlank()) return playlistId;
+    playlistId = uploadsPlaylist(channelEntity.getChannelId(), key);
+    channelEntity.setUploadsPlaylistId(playlistId);
+    channelEntity.setUpdatedAt(now());
+    channels.save(channelEntity);
+    return playlistId;
+  }
+
+  private static StringBuilder playlistItemsUrl(String playlistId, String key, int maxResults) {
+    return new StringBuilder("https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=")
+        .append(enc(playlistId)).append("&maxResults=").append(maxResults)
+        .append("&key=").append(enc(key));
+  }
+
+  private JsonNode videoDetails(String ids, String key) throws Exception {
+    return request("https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,status,liveStreamingDetails&id="
+        + enc(ids) + "&key=" + enc(key));
+  }
+
+  static boolean limitsFilled(int[] counts, int[] limits) {
+    return counts[0] >= limits[0] && counts[1] >= limits[1] && counts[2] >= limits[2];
+  }
+
+  private static int videoCategory(JsonNode video) {
+    int duration = duration(video.path("contentDetails").path("duration").asText());
+    if (isPastLiveStream(video)) return 2;
+    if (isShort(video, duration)) return 1;
+    return 0;
+  }
+
+  static boolean acceptInitialVideo(JsonNode video, int[] counts, int[] limits) {
+    int category = videoCategory(video);
+    if (counts[category] >= limits[category]) return false;
+    counts[category]++;
+    return true;
   }
 
   private YouTubeChannelEntity channelEntity(String channel) {
@@ -356,18 +430,6 @@ public class YouTubeSyncService {
 
   private static int bounded(Integer value) {
     return value == null ? 0 : Math.max(0, Math.min(1000, value));
-  }
-
-  private boolean acceptedInitialCategory(JsonNode video, YouTubeChannelEntity channel,
-                                          int[] categoryCounts, Map<String, String> currentSettings) {
-    int duration = duration(video.path("contentDetails").path("duration").asText());
-    if (isPastLiveStream(video)) {
-      return categoryCounts[2]++ < initialLiveStreamImportCount(channel);
-    }
-    if (isShort(video, duration)) {
-      return categoryCounts[1]++ < initialShortImportCount(channel);
-    }
-    return categoryCounts[0]++ < initialImportCount(channel.getChannelId(), currentSettings);
   }
 
   static boolean acceptedIncrementalVideo(JsonNode video, int regularLimit, int shortLimit,
@@ -539,6 +601,7 @@ public class YouTubeSyncService {
 
   /** Link one canonical metadata row into one user's isolated Jellyfin tree. */
   private void linkStoredVideo(long user, String video) throws Exception {
+    if (watchedVideos.existsByIdUserIdAndIdVideoId(user, video)) return;
     VideoEntity entity = videos.findById(video).orElse(null);
     if (entity == null) return;
     if (subscriptions.findByUserIdAndChannelIdAndEnabled(user, entity.getChannelId(), 1).isEmpty()) return;
