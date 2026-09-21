@@ -24,6 +24,7 @@ public final class SettingsPolicy {
             "preferred_audio_codecs", "jellyfin_url", "jellyfin_api_key",
             "jellyfin_enabled", "jellyfin_auto_refresh", "jellyfin_runtime_sync", "jellyfin_request_timeout_seconds",
             "yt_dlp_path", "ffmpeg_path", "proxy_url", "proxy_username", "proxy_password", "cookie_file", "youtube_po_token", "youtube_po_token_provider_args", "youtube_po_token_provider_enabled", "youtube_player_client",
+            "sponsorblock_enabled", "sponsorblock_api_url",
             "allowed_video_codecs", "allowed_audio_codecs");
     private static final Set<String> QUALITY_VALUES = Set.of("480", "720", "1080", "1440", "2160", "best", "best-compatible");
 
@@ -46,9 +47,9 @@ public final class SettingsPolicy {
                 case "newest_videos_to_download" -> integerInRange(key, value, 0, 1000);
                 case "initial_channel_import_count", "initial_short_import_count", "initial_live_stream_import_count" -> integerInRange(key, value, 0, 1000);
                 case "subscription_sync_minutes" -> integerInRange(key, value, 1, 10080);
-                case "background_fill_on_playback", "jellyfin_enabled", "jellyfin_auto_refresh", "jellyfin_runtime_sync", "youtube_po_token_provider_enabled" -> require("true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value), key + " must be true or false");
+                case "background_fill_on_playback", "jellyfin_enabled", "jellyfin_auto_refresh", "jellyfin_runtime_sync", "youtube_po_token_provider_enabled", "sponsorblock_enabled" -> require("true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value), key + " must be true or false");
                 case "jellyfin_request_timeout_seconds" -> integerInRange(key, value, 1, 120);
-                case "public_base_url", "jellyfin_url" -> url(key, value, Set.of("http", "https"));
+                case "public_base_url", "jellyfin_url", "sponsorblock_api_url" -> url(key, value, Set.of("http", "https"));
                 case "proxy_url" -> url(key, value, Set.of("http", "https", "socks5"));
                 case "preferred_video_codecs", "preferred_audio_codecs", "allowed_video_codecs", "allowed_audio_codecs" -> require(CODECS.matcher(value).matches(), key + " contains invalid codec characters");
                 case "youtube_po_token_provider_args", "youtube_player_client" -> require(value.length() <= 4096 && !value.matches(".*[\\r\\n\\u0000].*"), key + " contains invalid characters");

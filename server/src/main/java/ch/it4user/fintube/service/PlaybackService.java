@@ -30,14 +30,16 @@ public class PlaybackService {
     private final FragmentManager fragments;
     private final BackgroundFillService filler;
     private final SettingsService settings;
+    private final SponsorBlockService sponsorBlock;
 
-    public PlaybackService(UserVideoRepository userVideos, AuthService auth, MediaSourceService sources, FragmentManager fragments, BackgroundFillService filler, SettingsService settings) {
+    public PlaybackService(UserVideoRepository userVideos, AuthService auth, MediaSourceService sources, FragmentManager fragments, BackgroundFillService filler, SettingsService settings, SponsorBlockService sponsorBlock) {
         this.userVideos = userVideos;
         this.auth = auth;
         this.sources = sources;
         this.fragments = fragments;
         this.filler = filler;
         this.settings = settings;
+        this.sponsorBlock = sponsorBlock;
     }
 
     public String manifest(String video, String token) {
@@ -50,12 +52,19 @@ public class PlaybackService {
             valid(video, resolvedToken);
             var source = sources.source(video);
             if (backgroundFillOnPlayback()) filler.enqueue(video, "playback_manifest");
+            var sponsorSegments = sponsorBlock.skipSegments(video);
             StringBuilder output = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-PLAYLIST-TYPE:VOD\n");
             output.append("#EXT-X-TARGETDURATION:").append(source.targetDuration()).append("\n#EXT-X-MEDIA-SEQUENCE:0\n");
+            boolean discontinuity = false;
+            int skipped = 0;
             for (var fragment : source.fragments()) {
+                if (sponsored(fragment, sponsorSegments)) { discontinuity = true; skipped++; continue; }
+                if (discontinuity) output.append("#EXT-X-DISCONTINUITY\n");
                 output.append("#EXTINF:").append(String.format(java.util.Locale.ROOT, "%.3f", fragment.seconds())).append(",\n/play/")
                         .append(video).append("/fragment/").append(fragment.id()).append(fragmentExtension(source)).append("?token=").append(resolvedToken).append("\n");
+                discontinuity = false;
             }
+            if (skipped > 0) LOG.info("event=SPONSORBLOCK_FRAGMENTS_SKIPPED video={} fragments={} segments={}", video, skipped, sponsorSegments.size());
             return output.append("#EXT-X-ENDLIST\n").toString();
         } catch (ResponseStatusException e) {
             throw e;
@@ -127,6 +136,13 @@ public class PlaybackService {
     private boolean backgroundFillOnPlayback() {
         String value = settings.value(BACKGROUND_FILL_ON_PLAYBACK);
         return Boolean.parseBoolean(value);
+    }
+
+    /** Only omit complete media fragments: never cut through a GOP or remuxed TS packet. */
+    private static boolean sponsored(MediaSourceService.Fragment fragment, java.util.List<SponsorBlockService.Segment> segments) {
+        double start = fragment.startSeconds();
+        double end = start + fragment.seconds();
+        return segments.stream().anyMatch(segment -> start >= segment.startSeconds() && end <= segment.endSeconds());
     }
 
     private static String fragmentId(String value) {

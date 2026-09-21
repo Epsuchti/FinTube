@@ -31,6 +31,8 @@ export class AdminSettingsPageComponent implements OnInit {
     readonly settingLabels: Record<string, string> = {
         stream_quality: 'Stream quality',
         background_fill_on_playback: 'Complete videos during playback',
+        sponsorblock_enabled: 'Skip SponsorBlock sponsor segments',
+        sponsorblock_api_url: 'SponsorBlock API URL',
         allowed_video_codecs: 'Allowed video codecs',
         preferred_video_codecs: 'Preferred video codecs',
         allowed_audio_codecs: 'Allowed audio codecs',
@@ -69,7 +71,7 @@ export class AdminSettingsPageComponent implements OnInit {
     readonly settingGroups: SettingGroup[] = [
         {
             title: 'Playback',
-            keys: ['stream_quality', 'background_fill_on_playback', 'allowed_video_codecs', 'preferred_video_codecs', 'allowed_audio_codecs', 'preferred_audio_codecs', 'public_base_url']
+            keys: ['stream_quality', 'background_fill_on_playback', 'sponsorblock_enabled', 'sponsorblock_api_url', 'allowed_video_codecs', 'preferred_video_codecs', 'allowed_audio_codecs', 'preferred_audio_codecs', 'public_base_url']
         },
         {
             title: 'Cache',
@@ -111,6 +113,8 @@ export class AdminSettingsPageComponent implements OnInit {
         if (key === 'cache_min_free_gb') return 'The cache evicts the oldest inactive fragments when the filesystem drops below this free-space reserve.';
         if (key === 'background_download_max_mbps') return 'Maximum rate for low-priority prefetch jobs. Playback traffic is not limited by this setting.';
         if (key === 'background_fill_on_playback') return 'When enabled, starting playback also downloads the remaining fragments. When disabled, only requested playback fragments are downloaded.';
+        if (key === 'sponsorblock_enabled') return 'Uses SponsorBlock’s privacy-preserving lookup API to skip sponsor segments during Jellyfin playback.';
+        if (key === 'sponsorblock_api_url') return 'Official SponsorBlock API by default. Set this only when using a compatible self-hosted mirror.';
         if (key === 'youtube_po_token_provider_enabled') return 'Leave enabled. The provider address is configured by the deployment, not here.';
         if (key === 'youtube_po_token') return 'Usually leave blank. Use only a manually generated CLIENT.CONTEXT+TOKEN value when the automatic provider is unavailable.';
         return this.secretSettings.has(key) ? 'Secret · stored server-side and never shown to normal users' : 'Administrator-controlled global value';
@@ -121,7 +125,7 @@ export class AdminSettingsPageComponent implements OnInit {
     }
 
     isBoolean(key: string): boolean {
-        return key === 'background_fill_on_playback' || key === 'youtube_po_token_provider_enabled' || key === 'jellyfin_enabled' || key === 'jellyfin_auto_refresh' || key === 'jellyfin_runtime_sync';
+        return key === 'background_fill_on_playback' || key === 'sponsorblock_enabled' || key === 'youtube_po_token_provider_enabled' || key === 'jellyfin_enabled' || key === 'jellyfin_auto_refresh' || key === 'jellyfin_runtime_sync';
     }
 
     setSetting(key: string, value: string): void {
