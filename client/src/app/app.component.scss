@@ -55,6 +55,7 @@ button:hover:not(:disabled), .button:hover { border-color: #46617f; background: 
 .count-pill { flex: none; border: 1px solid #2b4261; border-radius: 99px; padding: 8px 12px; color: #99b5d3; font-size: .77rem; }
 .count-good { border-color: #315c58; color: #a5edc8; background: #153d37; }
 .panel { margin-bottom: 22px; border: 1px solid #213650; border-radius: 14px; background: #101e31; }
+.playlist-panel { padding: 20px; }
 .add-panel { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(300px, .8fr); align-items: center; gap: 30px; padding: 24px; }
 .add-copy h2 { margin-bottom: 10px; }
 .add-copy p { max-width: 650px; margin-bottom: 0; line-height: 1.55; }
@@ -225,6 +226,7 @@ td select { min-width: 94px; padding: 6px 8px; font-size: .75rem; }
   .inline-form > div { align-items: stretch; flex-direction: column; }
   .sidebar { grid-template-columns: repeat(2, 1fr); }
   .media-card { padding: 14px; }
+  .playlist-panel { padding: 16px; }
   .subscription-card { padding: 16px; }
   .subscription-details, .editor-fields { grid-template-columns: 1fr; }
   .subscription-footer { align-items: stretch; flex-direction: column; }
