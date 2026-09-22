@@ -20,11 +20,43 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: Stable VOD HLS manifest
+          description: HLS master selecting an immutable original or on-demand stream-copy VOD rendition
           content:
             application/vnd.apple.mpegurl:
               schema: { type: string }
         '404': { description: Video or token not found }
+  /play/{video}/rendition/{rendition}/index.m3u8:
+    get:
+      tags: [ Playback ]
+      operationId: getRenditionManifest
+      parameters:
+        - { name: video, in: path, required: true, schema: { type: string } }
+        - { name: rendition, in: path, required: true, schema: { type: string } }
+        - { name: token, in: query, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Immutable VOD media playlist
+          content:
+            application/vnd.apple.mpegurl:
+              schema: { type: string }
+        '404': { description: 'Video, token or rendition not found' }
+  /play/{video}/rendition/{rendition}/{index}.ts:
+    get:
+      tags: [ Playback ]
+      operationId: getRenditionFragment
+      parameters:
+        - { name: video, in: path, required: true, schema: { type: string } }
+        - { name: rendition, in: path, required: true, schema: { type: string } }
+        - { name: index, in: path, required: true, schema: { type: integer, minimum: 0 } }
+        - { name: token, in: query, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Original or timestamp-adjusted media segment (no re-encoding)
+          content:
+            video/mp2t: { schema: { type: string, format: binary } }
+            video/mp4: { schema: { type: string, format: binary } }
+            video/webm: { schema: { type: string, format: binary } }
+        '404': { description: 'Video, token, rendition or segment not found' }
   /play/{video}/fragment/{fragment}:
     get:
       tags: [ Playback ]

@@ -249,6 +249,14 @@ Encrypted credentials can only be restored with the same settings key. If you se
 - Keep the PO-token provider enabled and inspect `docker compose logs fintube pot-provider`.
 - Confirm the user's YouTube Data API key is configured in **Account**.
 
+### iPad playback causes high CPU usage
+
+The Jellyfin iPadOS app can request video transcoding for a FinTube HLS stream even when the iPad can play the source directly. On a CPU-only Jellyfin server, this can saturate the server and cause buffering.
+
+For the affected Jellyfin user, open **Dashboard → Users → [user] → Media playback** and disable **Allow video playback that requires transcoding**. If Jellyfin still starts an audio transcode, also disable the corresponding audio-transcoding permission. Keep **Allow video playback that requires conversion without re-encoding** enabled so Jellyfin can still remux the stream when necessary. Select the iPad's **Native Video Player**, use **Auto** or the highest playback quality, and start a new session.
+
+Verify the result in Jellyfin's **Dashboard → Activity**. The session should report **Direct Play** or **Remux/Direct Stream**, and the Jellyfin `ffmpeg` processes should no longer consume all CPU cores. Disabling transcoding is a per-user workaround: media that genuinely needs codec conversion, subtitle burn-in, or other video processing may fail instead of playing. Re-enable the permission for users or devices that need those conversions.
+
 ### A channel does not appear
 
 - Add its full URL, channel ID, or `@handle` instead of searching by name.

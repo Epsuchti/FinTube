@@ -94,6 +94,11 @@ public class JellyfinSyncService {
   /** Called after a user's .strm/.nfo/artwork files have been atomically created. */
   public void afterLibraryGeneration(String videoId, Path libraryPath, long durationSeconds) {
     requestLibraryRefresh();
+    syncPlaybackRuntime(videoId, libraryPath, durationSeconds);
+  }
+
+  /** Match the chosen playback timeline without triggering a library scan on every play. */
+  public void syncPlaybackRuntime(String videoId, Path libraryPath, long durationSeconds) {
     JellyfinClient.Configuration c = client.configuration();
     if (!c.enabled() || !c.configured() || !c.runtimeSync()) return;
     pending.put(pendingKey(videoId, libraryPath), new Pending(videoId, libraryPath, durationSeconds, 0));

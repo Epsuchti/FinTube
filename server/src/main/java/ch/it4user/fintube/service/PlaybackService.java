@@ -3,6 +3,8 @@ package ch.it4user.fintube.service;
 import ch.it4user.fintube.media.BackgroundFillService;
 import ch.it4user.fintube.media.FragmentManager;
 import ch.it4user.fintube.media.MediaSourceService;
+import ch.it4user.fintube.media.SponsorRenditionService;
+import ch.it4user.fintube.integration.JellyfinSyncService;
 import ch.it4user.fintube.core.SettingsService;
 import ch.it4user.fintube.persistence.entities.UserVideoEntity;
 import ch.it4user.fintube.persistence.repositories.UserVideoRepository;
@@ -31,8 +33,11 @@ public class PlaybackService {
     private final BackgroundFillService filler;
     private final SettingsService settings;
     private final SponsorBlockService sponsorBlock;
+    private final SponsorRenditionService renditions;
+    private final JellyfinSyncService jellyfin;
+    private final java.util.concurrent.ConcurrentHashMap<String, String> reportedVersions = new java.util.concurrent.ConcurrentHashMap<>();
 
-    public PlaybackService(UserVideoRepository userVideos, AuthService auth, MediaSourceService sources, FragmentManager fragments, BackgroundFillService filler, SettingsService settings, SponsorBlockService sponsorBlock) {
+    public PlaybackService(UserVideoRepository userVideos, AuthService auth, MediaSourceService sources, FragmentManager fragments, BackgroundFillService filler, SettingsService settings, SponsorBlockService sponsorBlock, SponsorRenditionService renditions, JellyfinSyncService jellyfin) {
         this.userVideos = userVideos;
         this.auth = auth;
         this.sources = sources;
@@ -40,6 +45,8 @@ public class PlaybackService {
         this.filler = filler;
         this.settings = settings;
         this.sponsorBlock = sponsorBlock;
+        this.renditions = renditions;
+        this.jellyfin = jellyfin;
     }
 
     public String manifest(String video, String token) {
@@ -53,25 +60,68 @@ public class PlaybackService {
             var source = sources.source(video);
             if (backgroundFillOnPlayback()) filler.enqueue(video, "playback_manifest");
             var sponsorSegments = sponsorBlock.skipSegments(video);
-            StringBuilder output = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-PLAYLIST-TYPE:VOD\n");
-            output.append("#EXT-X-TARGETDURATION:").append(source.targetDuration()).append("\n#EXT-X-MEDIA-SEQUENCE:0\n");
-            boolean discontinuity = false;
-            int skipped = 0;
-            for (var fragment : source.fragments()) {
-                if (sponsored(fragment, sponsorSegments)) { discontinuity = true; skipped++; continue; }
-                if (discontinuity) output.append("#EXT-X-DISCONTINUITY\n");
-                output.append("#EXTINF:").append(String.format(java.util.Locale.ROOT, "%.3f", fragment.seconds())).append(",\n/play/")
-                        .append(video).append("/fragment/").append(fragment.id()).append(fragmentExtension(source)).append("?token=").append(resolvedToken).append("\n");
-                discontinuity = false;
-            }
-            if (skipped > 0) LOG.info("event=SPONSORBLOCK_FRAGMENTS_SKIPPED video={} fragments={} segments={}", video, skipped, sponsorSegments.size());
-            return output.append("#EXT-X-ENDLIST\n").toString();
+            var selected = renditions.select(video, source, sponsorSegments);
+            reportRuntime(video, resolvedToken, selected);
+            LOG.info("event=PLAYBACK_RENDITION_SELECTED video={} rendition={} edited={} durationSeconds={}",
+                    video, selected.id(), selected.plan().edited(), selected.plan().duration());
+            // A master playlist is the selection point. The referenced VOD and its media never change.
+            return "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=" + selected.plan().bandwidth()
+                    + "\n" + renditionBase(video, selected.id()) + "index.m3u8?token=" + encode(resolvedToken) + "\n";
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {
             LOG.error("event=PLAYBACK_MANIFEST_FAILED video={} reason={}", video, e.getMessage(), e);
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "playback manifest could not be resolved", e);
         }
+    }
+
+    private void reportRuntime(String video, String token, SponsorRenditionService.Selection selection) {
+        try {
+            if (selection.id().equals(reportedVersions.get(token))) return;
+            for (var userVideo : userVideos.findByIdVideoIdIn(java.util.List.of(video))) {
+                if (token.equals(userVideo.getPlaybackToken()))
+                    jellyfin.syncPlaybackRuntime(video, Path.of(userVideo.getLibraryPath()), (long) Math.ceil(selection.plan().duration()));
+            }
+            if (reportedVersions.size() >= 10_000) reportedVersions.clear();
+            reportedVersions.put(token, selection.id());
+        } catch (Exception failure) {
+            LOG.warn("event=PLAYBACK_RUNTIME_SYNC_FAILED video={} reason={}", video, failure.toString());
+        }
+    }
+
+    public String renditionManifest(String video, String rendition, String token) {
+        valid(video, token);
+        try {
+            var plan = renditions.read(video, rendition);
+            var durations = plan.edited() ? plan.segments().stream().map(SponsorRenditionService.Segment::seconds).toList()
+                    : plan.inputs().stream().map(SponsorRenditionService.Input::seconds).toList();
+            StringBuilder output = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD\n");
+            output.append("#EXT-X-TARGETDURATION:").append((int) Math.ceil(durations.stream().mapToDouble(Double::doubleValue).max().orElseThrow()))
+                    .append("\n#EXT-X-MEDIA-SEQUENCE:0\n");
+            for (int i = 0; i < durations.size(); i++) {
+                output.append("#EXTINF:").append(String.format(java.util.Locale.ROOT, "%.6f", durations.get(i)))
+                        .append(",\n").append(renditionBase(video, rendition)).append(i).append(".ts?token=").append(encode(token)).append('\n');
+            }
+            return output.append("#EXT-X-ENDLIST\n").toString();
+        } catch (ResponseStatusException failure) { throw failure; }
+        catch (Exception failure) { throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "playback rendition unavailable", failure); }
+    }
+
+    public Fragment renditionFragment(String video, String rendition, int index, String token) {
+        valid(video, token);
+        try {
+            var media = renditions.open(video, rendition, index);
+            return new Fragment(new InputStreamResource(media.stream()), media.bytes(), MediaType.parseMediaType(media.type()));
+        } catch (ResponseStatusException failure) { throw failure; }
+        catch (Exception failure) { throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "playback rendition fragment unavailable", failure); }
+    }
+
+    private static String renditionBase(String video, String rendition) {
+        return "/play/" + encode(video) + "/rendition/" + rendition + "/";
+    }
+
+    private static String encode(String value) {
+        return java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");
     }
 
     public Fragment fragment(String video, String fragmentId, String token) {
@@ -128,21 +178,9 @@ public class PlaybackService {
         }
     }
 
-    private static String fragmentExtension(MediaSourceService.Source source) {
-        if (!source.progressive()) return ".ts";
-        return "webm".equalsIgnoreCase(source.container()) ? ".webm" : ".mp4";
-    }
-
     private boolean backgroundFillOnPlayback() {
         String value = settings.value(BACKGROUND_FILL_ON_PLAYBACK);
         return Boolean.parseBoolean(value);
-    }
-
-    /** Only omit complete media fragments: never cut through a GOP or remuxed TS packet. */
-    private static boolean sponsored(MediaSourceService.Fragment fragment, java.util.List<SponsorBlockService.Segment> segments) {
-        double start = fragment.startSeconds();
-        double end = start + fragment.seconds();
-        return segments.stream().anyMatch(segment -> start >= segment.startSeconds() && end <= segment.endSeconds());
     }
 
     private static String fragmentId(String value) {

@@ -33,4 +33,19 @@ public class PlaybackContractController implements PlaybackApi {
                 .header("Cache-Control", "no-store")
                 .body(playback.manifest(video, token, requestContext));
     }
+
+    @Override
+    public ResponseEntity<String> getRenditionManifest(String video, String rendition, String token) {
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType("application/vnd.apple.mpegurl"))
+                .header("Cache-Control", "private, no-store")
+                .body(playback.renditionManifest(video, rendition, token));
+    }
+
+    @Override
+    public ResponseEntity<Resource> getRenditionFragment(String video, String rendition, Integer index, String token) {
+        PlaybackService.Fragment value = playback.renditionFragment(video, rendition, index, token);
+        var response = ResponseEntity.ok().contentType(value.contentType());
+        if (value.contentLength() >= 0) response.contentLength(value.contentLength());
+        return response.body(value.resource());
+    }
 }
