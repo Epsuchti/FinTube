@@ -4,6 +4,7 @@ import ch.it4user.fintube.service.LibraryApplicationService;
 
 import ch.it4user.fintube.api.contract.LibraryApi;
 import ch.it4user.fintube.api.contract.model.AddSubscriptionRequest;
+import ch.it4user.fintube.api.contract.model.AddPlaylistSubscriptionRequest;
 import ch.it4user.fintube.api.contract.model.ImportChannelsResult;
 import ch.it4user.fintube.api.contract.model.ImportCookiesRequest;
 import ch.it4user.fintube.api.contract.model.RefreshResult;
@@ -17,6 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 import jakarta.servlet.http.HttpServletRequest;
 
 import ch.it4user.fintube.api.contract.model.Subscription;
+import ch.it4user.fintube.api.contract.model.PlaylistSubscription;
 import java.util.List;
 
 @RestController
@@ -33,6 +35,28 @@ public class LibraryContractController implements LibraryApi {
     @Override
     public ResponseEntity<Void> addSubscription(AddSubscriptionRequest request) {
         library.addSubscription(requestContext, request);
+        return ResponseEntity.ok().build();
+    }
+
+    @Override
+    public ResponseEntity<Void> addPlaylistSubscription(AddPlaylistSubscriptionRequest request) {
+        library.addPlaylistSubscription(requestContext, request);
+        return ResponseEntity.ok().build();
+    }
+
+    @Override
+    public ResponseEntity<List<PlaylistSubscription>> listPlaylistSubscriptions() {
+        return ResponseEntity.ok(library.playlistSubscriptions(requestContext));
+    }
+
+    @Override
+    public ResponseEntity<RefreshResult> refreshPlaylistSubscription(Long id) {
+        return ResponseEntity.ok(library.refreshPlaylistSubscription(requestContext, id));
+    }
+
+    @Override
+    public ResponseEntity<Void> removePlaylistSubscription(Long id) {
+        library.removePlaylistSubscription(requestContext, id);
         return ResponseEntity.ok().build();
     }
 

@@ -2,6 +2,7 @@ package ch.it4user.fintube.integration;
 
 import ch.it4user.fintube.core.SettingsService;
 import ch.it4user.fintube.persistence.repositories.YouTubeSubscriptionRepository;
+import ch.it4user.fintube.persistence.repositories.YouTubePlaylistSubscriptionRepository;
 import ch.it4user.fintube.service.UserYouTubeApiKeyService;
 import java.time.Instant;
 import java.util.HashSet;
@@ -17,16 +18,18 @@ public class SubscriptionScheduler {
   private static final Logger LOG = LoggerFactory.getLogger(SubscriptionScheduler.class);
   private final SettingsService settings;
   private final YouTubeSubscriptionRepository subscriptions;
+  private final YouTubePlaylistSubscriptionRepository playlists;
   private final YouTubeSyncService sync;
   private final UserYouTubeApiKeyService youtubeApiKeys;
   private final JellyfinSyncService jellyfin;
   private final WatchedVideoSyncService watched;
 
-  SubscriptionScheduler(SettingsService settings, YouTubeSubscriptionRepository subscriptions,
+  SubscriptionScheduler(SettingsService settings, YouTubeSubscriptionRepository subscriptions, YouTubePlaylistSubscriptionRepository playlists,
                         YouTubeSyncService sync, UserYouTubeApiKeyService youtubeApiKeys,
                         JellyfinSyncService jellyfin, WatchedVideoSyncService watched) {
     this.settings = settings;
     this.subscriptions = subscriptions;
+    this.playlists = playlists;
     this.sync = sync;
     this.youtubeApiKeys = youtubeApiKeys;
     this.jellyfin = jellyfin;
@@ -51,6 +54,14 @@ public class SubscriptionScheduler {
           } catch (Exception e) {
             LOG.error("Scheduled subscription sync failed for channel={} userId={}", channel, due.getUserId(), e);
             // A channel failure is isolated; the scheduler must remain alive.
+          }
+        }
+        for (var playlist : playlists.findDue(cutoff)) {
+          if (!youtubeApiKeys.configured(playlist.getUserId())) continue;
+          try {
+            sync.syncPlaylist(playlist);
+          } catch (Exception e) {
+            LOG.error("Scheduled playlist sync failed for playlist={} userId={}", playlist.getPlaylistId(), playlist.getUserId(), e);
           }
         }
       }

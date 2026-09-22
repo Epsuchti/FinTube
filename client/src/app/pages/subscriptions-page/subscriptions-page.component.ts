@@ -2,7 +2,7 @@ import {ChangeDetectionStrategy, Component, ElementRef, EventEmitter, OnInit, Ou
 import {CommonModule, DatePipe} from '@angular/common';
 import {HttpErrorResponse} from '@angular/common/http';
 import {FormsModule} from '@angular/forms';
-import {LibraryService, Subscription} from '../../api';
+import {LibraryService, PlaylistSubscription, Subscription} from '../../api';
 import {switchMap} from 'rxjs';
 
 interface CookieImportFile {
@@ -20,6 +20,7 @@ export class SubscriptionsPageComponent implements OnInit {
     private readonly libraryApi = inject(LibraryService);
 
     readonly subscriptions = signal<Subscription[]>([]);
+    readonly playlists = signal<PlaylistSubscription[]>([]);
     readonly filteredSubscriptions = computed(() => {
         const query = this.appliedSearch();
         if (!query) return this.subscriptions();
@@ -44,10 +45,12 @@ export class SubscriptionsPageComponent implements OnInit {
     private cookieContents = '';
     readonly appliedSearch = signal('');
     channel = '';
+    playlist = '';
     searchQuery = '';
 
     ngOnInit(): void {
         this.loadSubscriptions();
+        this.loadPlaylists();
         this.loadVideoCount();
     }
 
@@ -68,6 +71,34 @@ export class SubscriptionsPageComponent implements OnInit {
                 this.loading.set(false);
                 this.error.set(this.messageFor(error, 'Could not add subscription.'));
             }
+        });
+    }
+
+    addPlaylist(): void {
+        const value = this.playlist.trim();
+        if (!value) { this.error.set('Enter a YouTube playlist URL or playlist ID.'); return; }
+        this.playlist = '';
+        this.loading.set(true);
+        this.libraryApi.addPlaylistSubscription({addPlaylistSubscriptionRequest: {playlist: value}}).subscribe({
+            next: () => { this.notice.set('Playlist added. Refresh it to fetch every video.'); this.loadPlaylists(); },
+            error: (error: unknown) => { this.loading.set(false); this.error.set(this.messageFor(error, 'Could not add playlist.')); }
+        });
+    }
+
+    refreshPlaylist(playlist: PlaylistSubscription): void {
+        this.loading.set(true);
+        this.libraryApi.refreshPlaylistSubscription({id: playlist.id}).subscribe({
+            next: result => { this.notice.set(`Playlist refreshed: ${result.discovered ?? 0} new videos.`); this.loadPlaylists(); this.loadVideoCount(); },
+            error: (error: unknown) => { this.loading.set(false); this.error.set(this.messageFor(error, 'Could not refresh playlist.')); }
+        });
+    }
+
+    removePlaylist(playlist: PlaylistSubscription): void {
+        if (!window.confirm(`Remove playlist ${playlist.name}?`)) return;
+        this.loading.set(true);
+        this.libraryApi.removePlaylistSubscription({id: playlist.id}).subscribe({
+            next: () => { this.notice.set('Playlist removed.'); this.loadPlaylists(); },
+            error: (error: unknown) => { this.loading.set(false); this.error.set(this.messageFor(error, 'Could not remove playlist.')); }
         });
     }
 
@@ -345,6 +376,13 @@ export class SubscriptionsPageComponent implements OnInit {
                 this.loading.set(false);
                 this.error.set(this.messageFor(error, 'Could not load subscriptions.'));
             }
+        });
+    }
+
+    private loadPlaylists(): void {
+        this.libraryApi.listPlaylistSubscriptions().subscribe({
+            next: playlists => { this.playlists.set(playlists); this.loading.set(false); },
+            error: (error: unknown) => { this.loading.set(false); this.error.set(this.messageFor(error, 'Could not load playlists.')); }
         });
     }
 

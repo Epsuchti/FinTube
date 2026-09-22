@@ -18,6 +18,8 @@ import ch.it4user.fintube.persistence.entities.YouTubeChannelEntity;
 import ch.it4user.fintube.persistence.repositories.YouTubeChannelRepository;
 import ch.it4user.fintube.persistence.entities.YouTubeSubscriptionEntity;
 import ch.it4user.fintube.persistence.repositories.YouTubeSubscriptionRepository;
+import ch.it4user.fintube.persistence.entities.YouTubePlaylistSubscriptionEntity;
+import ch.it4user.fintube.persistence.repositories.YouTubePlaylistSubscriptionRepository;
 import ch.it4user.fintube.service.UserYouTubeApiKeyService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -68,6 +70,7 @@ public class YouTubeSyncService {
   final SettingsService settings;
   final YouTubeChannelRepository channels;
   final YouTubeSubscriptionRepository subscriptions;
+  final YouTubePlaylistSubscriptionRepository playlistSubscriptions;
   final VideoRepository videos;
   final UserVideoRepository userVideos;
   final WatchedVideoRepository watchedVideos;
@@ -82,6 +85,7 @@ public class YouTubeSyncService {
 
   public YouTubeSyncService(SettingsService settings, YouTubeChannelRepository channels,
                             YouTubeSubscriptionRepository subscriptions, VideoRepository videos,
+                            YouTubePlaylistSubscriptionRepository playlistSubscriptions,
                             UserVideoRepository userVideos, WatchedVideoRepository watchedVideos,
                             UserRepository users,
                             ApplicationPaths paths, JellyfinSyncService jellyfin,
@@ -90,6 +94,7 @@ public class YouTubeSyncService {
     this.settings = settings;
     this.channels = channels;
     this.subscriptions = subscriptions;
+    this.playlistSubscriptions = playlistSubscriptions;
     this.videos = videos;
     this.userVideos = userVideos;
     this.watchedVideos = watchedVideos;
@@ -108,6 +113,108 @@ public class YouTubeSyncService {
       linkExistingVideos(channel, userId);
       return discovered;
     }
+  }
+
+  /** Fetch every page of a subscribed playlist and materialize it in its own user folder. */
+  public int syncPlaylist(YouTubePlaylistSubscriptionEntity subscription) throws Exception {
+    long userId = subscription.getUserId();
+    String previousName = subscription.getName();
+    String key = youtubeApiKeys.key(userId);
+    if (key == null || key.isBlank()) throw new IllegalStateException("YouTube Data API key is not configured for this user");
+    JsonNode playlist = request("https://www.googleapis.com/youtube/v3/playlists?part=snippet&id="
+        + enc(subscription.getPlaylistId()) + "&key=" + enc(key)).path("items").path(0);
+    if (!playlist.isObject()) throw new IllegalArgumentException("YouTube playlist was not found or is private");
+    String name = playlist.path("snippet").path("title").asText("").trim();
+    if (!name.isBlank()) subscription.setName(name);
+    subscription.setUrl("https://www.youtube.com/playlist?list=" + subscription.getPlaylistId());
+    subscription.setLastCheckedAt(now());
+    playlistSubscriptions.save(subscription);
+    migratePlaylistFolder(userId, previousName, subscription.getName());
+
+    int discovered = 0;
+    String page = null;
+    do {
+      StringBuilder url = playlistItemsUrl(subscription.getPlaylistId(), key, 50);
+      if (page != null && !page.isBlank()) url.append("&pageToken=").append(enc(page));
+      JsonNode root = request(url.toString());
+      List<String> ids = new ArrayList<>();
+      for (JsonNode item : root.path("items")) {
+        String id = playlistVideoId(item);
+        if (!id.isBlank() && !ids.contains(id)) ids.add(id);
+      }
+      for (int start = 0; start < ids.size(); start += 50) {
+        String batch = String.join(",", ids.subList(start, Math.min(start + 50, ids.size())));
+        for (JsonNode video : videoDetails(batch, key).path("items")) {
+          String videoId = video.path("id").asText("");
+          if (videoId.isBlank()) continue;
+          String channelId = video.path("snippet").path("channelId").asText("");
+          if (channelId.isBlank()) continue;
+          ensureVideoChannel(channelId, video.path("snippet"), key);
+          if (upsertVideo(video, channelId)) discovered++;
+          writePlaylistVideo(userId, "_" + subscription.getName(), videoId);
+        }
+      }
+      page = root.path("nextPageToken").asText("");
+    } while (!page.isBlank());
+    subscription.setLastSuccessfulSyncAt(now());
+    playlistSubscriptions.save(subscription);
+    return discovered;
+  }
+
+  public boolean removePlaylistSubscription(long userId, long subscriptionId) throws Exception {
+    YouTubePlaylistSubscriptionEntity subscription = playlistSubscriptions.findByIdAndUserId(subscriptionId, userId).orElse(null);
+    UserEntity user = users.findById(userId).orElse(null);
+    if (subscription == null || user == null) return false;
+    Path root = paths.usersRoot.resolve(user.getFilesystemSlug()).toAbsolutePath().normalize();
+    Path folder = root.resolve(clean("_" + subscription.getName())).normalize();
+    Path legacyFolder = root.resolve(clean("Playlist - " + subscription.getName())).normalize();
+    playlistSubscriptions.delete(subscription);
+    List<UserVideoEntity> playlistLinks = userVideos.findAll().stream()
+        .filter(link -> link.getId().getUserId().equals(userId))
+        .filter(link -> {
+          try {
+            Path path = Path.of(link.getLibraryPath()).toAbsolutePath().normalize();
+            return path.startsWith(folder) || path.startsWith(legacyFolder);
+          }
+          catch (RuntimeException ignored) { return false; }
+        }).toList();
+    if (!playlistLinks.isEmpty()) userVideos.deleteAllInBatch(playlistLinks);
+    deleteTreeSafely(folder, root);
+    deleteTreeSafely(legacyFolder, root);
+    deleteIfEmpty(folder.getParent(), root);
+    return true;
+  }
+
+  private void migratePlaylistFolder(long userId, String previousName, String currentName) {
+    UserEntity user = users.findById(userId).orElse(null);
+    if (user == null) return;
+    Path root = paths.usersRoot.resolve(user.getFilesystemSlug()).toAbsolutePath().normalize();
+    Path destination = root.resolve(clean("_" + currentName)).normalize();
+    Path legacy = root.resolve(clean("Playlist - " + previousName)).normalize();
+    if (!legacy.startsWith(root) || !destination.startsWith(root) || Files.exists(destination) || !Files.isDirectory(legacy)) return;
+    try {
+      Files.move(legacy, destination);
+      for (UserVideoEntity link : userVideos.findAll()) {
+        if (!link.getId().getUserId().equals(userId)) continue;
+        Path stored = Path.of(link.getLibraryPath()).toAbsolutePath().normalize();
+        if (stored.startsWith(legacy)) {
+          link.setLibraryPath(destination.resolve(legacy.relativize(stored)).toString());
+          userVideos.save(link);
+        }
+      }
+    } catch (Exception e) {
+      LOG.warn("event=PLAYLIST_FOLDER_MIGRATION_FAILED userId={} reason={}", userId, safeError(e));
+    }
+  }
+
+  private void ensureVideoChannel(String channelId, JsonNode snippet, String key) {
+    if (channels.existsById(channelId)) return;
+    String name = snippet.path("channelTitle").asText("");
+    if (name.isBlank()) name = channelId;
+    YouTubeChannelEntity channel = new YouTubeChannelEntity(channelId, name,
+        "https://www.youtube.com/channel/" + channelId, now());
+    channels.save(channel);
+    ensureChannelMetadata(channel, key);
   }
 
   /**
@@ -669,9 +776,19 @@ public class YouTubeSyncService {
     UserEntity userEntity = users.findById(user).orElse(null);
     YouTubeChannelEntity channelEntity = channels.findById(entity.getChannelId()).orElse(null);
     if (userEntity == null || channelEntity == null) return;
-    writeLibrary(user, userEntity.getFilesystemSlug(), channelEntity.getName(), entity.getChannelId(),
+    writeLibrary(user, userEntity.getFilesystemSlug(), channelEntity.getName(),
         channelEntity.getThumbnailUrl(), video, entity.getTitle(), entity.getDescription(), entity.getPublishedAt(),
-        entity.getDurationSeconds(), entity.getThumbnailUrl(), entity.getAvailability());
+        entity.getDurationSeconds(), entity.getThumbnailUrl(), entity.getAvailability(), true);
+  }
+
+  private void writePlaylistVideo(long user, String playlistName, String video) throws Exception {
+    if (watchedVideos.existsByIdUserIdAndIdVideoId(user, video)) return;
+    VideoEntity entity = videos.findById(video).orElse(null);
+    UserEntity userEntity = users.findById(user).orElse(null);
+    if (entity == null || userEntity == null) return;
+    writeLibrary(user, userEntity.getFilesystemSlug(), playlistName, "", video, entity.getTitle(),
+        entity.getDescription(), entity.getPublishedAt(), entity.getDurationSeconds(), entity.getThumbnailUrl(),
+        entity.getAvailability(), false);
   }
 
   // Compatibility wrapper for callers from older builds.
@@ -680,39 +797,41 @@ public class YouTubeSyncService {
     if (!id.isBlank()) linkStoredVideo(user, id);
   }
 
-  private void writeLibrary(long user, String slug, String channelName, String channel, String channelThumbnail,
+  private void writeLibrary(long user, String slug, String folderName, String folderThumbnail,
                             String video,
                             String title, String description, String published, int duration,
-                            String thumbnail, String availability) throws Exception {
+                            String thumbnail, String availability, boolean migrateExisting) throws Exception {
     Path root = paths.usersRoot.resolve(slug).toAbsolutePath().normalize();
     if (!root.startsWith(paths.usersRoot.toAbsolutePath().normalize()))
       throw new SecurityException("invalid user filesystem root");
-    Path channelPath = root.resolve(clean(channelName)).normalize();
+    Path channelPath = root.resolve(clean(folderName)).normalize();
     if (!channelPath.startsWith(root) || channelPath.equals(root)) throw new SecurityException("invalid channel library path");
     Path path = channelPath.resolve(video).normalize();
     if (!path.startsWith(root) || path.equals(root)) throw new SecurityException("invalid library path");
     UserVideoId linkId = new UserVideoId(user, video);
     UserVideoEntity link = userVideos.findById(linkId).orElse(null);
+    boolean newLink = link == null;
     Path existingPath = link == null ? null : Path.of(link.getLibraryPath()).toAbsolutePath().normalize();
-    migrateLibraryDirectory(existingPath, path, root);
+    if (migrateExisting) migrateLibraryDirectory(existingPath, path, root);
     Files.createDirectories(path);
-    downloadThumbnail(channelThumbnail, channelPath.resolve("folder.jpg"));
+    downloadThumbnail(folderThumbnail, channelPath.resolve("folder.jpg"));
     String token = link == null ? UUID.randomUUID().toString().replace("-", "") : link.getPlaybackToken();
     String base = settings().getOrDefault("public_base_url", "http://localhost:8080");
     Files.writeString(path.resolve("video.strm"), base + "/play/" + video + "?token=" + token + "\n");
     String date = published == null ? "" : published.length() >= 10 ? published.substring(0, 10) : published;
     String nfo = "<movie><title>" + xml(title) + "</title><plot>" + xml(description) + "</plot><studio>"
-        + xml(channelName) + "</studio><runtime>" + Math.max(1, duration / 60)
+        + xml(folderName) + "</studio><runtime>" + Math.max(1, duration / 60)
         + "</runtime><uniqueid type=\"youtube\">" + xml(video) + "</uniqueid><premiered>" + xml(date)
         + "</premiered><tagline>" + xml(availability) + "</tagline></movie>";
     Files.writeString(path.resolve("video.nfo"), nfo);
     downloadThumbnail(thumbnail, path.resolve("video-thumb.jpg"));
-    if (link == null) {
+    if (newLink) {
       link = new UserVideoEntity(linkId, path.toString(), token, now());
-    } else {
+    } else if (migrateExisting) {
       link.setLibraryPath(path.toString());
+      userVideos.save(link);
     }
-    userVideos.save(link);
+    if (newLink) userVideos.save(link);
     jellyfin.afterLibraryGeneration(video, path, duration);
   }
 

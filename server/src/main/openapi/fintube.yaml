@@ -49,6 +49,15 @@ paths:
   /subscriptions/{id}/refresh:
     parameters: [ { name: id, in: path, required: true, schema: { type: integer, format: int64 } } ]
     post: { tags: [ Library ], operationId: refreshSubscription, responses: { '200': { description: Refreshed, content: { application/json: { schema: { $ref: '#/components/schemas/RefreshResult' } } } } } }
+  /playlists:
+    get: { tags: [ Library ], operationId: listPlaylistSubscriptions, responses: { '200': { description: Playlist subscriptions, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/PlaylistSubscription' } } } } } } }
+    post: { tags: [ Library ], operationId: addPlaylistSubscription, requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AddPlaylistSubscriptionRequest' } } } }, responses: { '200': { description: Added } } }
+  /playlists/{id}:
+    parameters: [ { name: id, in: path, required: true, schema: { type: integer, format: int64 } } ]
+    delete: { tags: [ Library ], operationId: removePlaylistSubscription, responses: { '200': { description: Removed } } }
+  /playlists/{id}/refresh:
+    parameters: [ { name: id, in: path, required: true, schema: { type: integer, format: int64 } } ]
+    post: { tags: [ Library ], operationId: refreshPlaylistSubscription, responses: { '200': { description: Refreshed, content: { application/json: { schema: { $ref: '#/components/schemas/RefreshResult' } } } } } }
   /videos:
     get:
       tags: [ Library ]
@@ -101,6 +110,7 @@ components:
     YouTubeApiKeyStatus: { type: object, required: [ configured ], properties: { configured: { type: boolean } } }
     UpdateYouTubeApiKeyRequest: { type: object, required: [ api_key ], properties: { api_key: { type: string, maxLength: 4096 } } }
     AddSubscriptionRequest: { type: object, required: [ channel ], properties: { channel: { type: string } } }
+    AddPlaylistSubscriptionRequest: { type: object, required: [ playlist ], properties: { playlist: { type: string } } }
     ImportCookiesRequest: { type: object, required: [ cookies ], properties: { cookies: { type: string, minLength: 1, maxLength: 5000000 } } }
     ImportChannelsResult: { type: object, required: [ imported, skipped, failed ], properties: { imported: { type: integer, minimum: 0 }, skipped: { type: integer, minimum: 0 }, failed: { type: integer, minimum: 0 } } }
     ToggleSubscriptionRequest: { type: object, required: [ enabled ], properties: { enabled: { type: boolean }, initial_import_count: { type: integer, minimum: 0, maximum: 1000 }, short_import_count: { type: integer, minimum: 0, maximum: 1000 }, live_stream_import_count: { type: integer, minimum: 0, maximum: 1000 }, download_count: { type: integer, minimum: 0, maximum: 1000 }, short_download_count: { type: integer, minimum: 0, maximum: 1000 }, live_stream_download_count: { type: integer, minimum: 0, maximum: 1000 } } }
@@ -109,6 +119,7 @@ components:
     RefreshResult: { type: object, properties: { discovered: { type: integer } } }
     OperationResult: { type: object, properties: { success: { type: boolean }, message: { type: string } } }
     Subscription: { type: object, required: [ id, channel_id, name, enabled, initial_import_count, short_import_count, live_stream_import_count, download_count, short_download_count, live_stream_download_count ], properties: { id: { type: integer, format: int64 }, channel_id: { type: string }, name: { type: string }, url: { type: string }, enabled: { type: boolean }, initial_import_count: { type: integer, minimum: 0, maximum: 1000 }, short_import_count: { type: integer, minimum: 0, maximum: 1000 }, live_stream_import_count: { type: integer, minimum: 0, maximum: 1000 }, download_count: { type: integer, minimum: 0, maximum: 1000 }, short_download_count: { type: integer, minimum: 0, maximum: 1000 }, live_stream_download_count: { type: integer, minimum: 0, maximum: 1000 }, last_checked_at: { type: string }, last_successful_sync_at: { type: string } } }
+    PlaylistSubscription: { type: object, required: [ id, playlist_id, name, enabled ], properties: { id: { type: integer, format: int64 }, playlist_id: { type: string }, name: { type: string }, url: { type: string }, enabled: { type: boolean }, last_checked_at: { type: string }, last_successful_sync_at: { type: string } } }
     Video: { type: object, required: [ video_id, title ], properties: { video_id: { type: string }, title: { type: string }, description: { type: string }, published_at: { type: string }, duration_seconds: { type: integer }, channel: { type: string }, thumbnail_url: { type: string }, library_path: { type: string }, cache_status: { type: string }, cache_last_accessed_at: { type: string }, cache_expires_at: { type: string }, cache_bytes: { type: integer, format: int64 }, cached_fragments: { type: integer }, downloaded: { type: boolean } } }
     VideoPage: { type: object, required: [ items, page, page_size, total_elements, total_pages ], properties: { items: { type: array, items: { $ref: '#/components/schemas/Video' } }, page: { type: integer }, page_size: { type: integer }, total_elements: { type: integer, format: int64 }, total_pages: { type: integer } } }
     AdminUser: { type: object, required: [ id, username, role, filesystem_slug, created_at ], properties: { id: { type: integer, format: int64 }, username: { type: string }, email: { type: string }, role: { $ref: '#/components/schemas/Role' }, filesystem_slug: { type: string }, created_at: { type: string } } }

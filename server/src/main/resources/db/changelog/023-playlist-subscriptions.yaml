@@ -1,0 +1,19 @@
+databaseChangeLog:
+  - changeSet:
+      id: 023-playlist-subscriptions
+      author: fintube
+      changes:
+        - createTable:
+            tableName: youtube_playlist_subscriptions
+            columns:
+              - column: {name: id, type: bigint, autoIncrement: true, constraints: {primaryKey: true, nullable: false}}
+              - column: {name: user_id, type: bigint, constraints: {nullable: false}}
+              - column: {name: playlist_id, type: varchar(255), constraints: {nullable: false}}
+              - column: {name: name, type: varchar(512), constraints: {nullable: false}}
+              - column: {name: url, type: varchar(4096)}
+              - column: {name: enabled, type: integer, defaultValueNumeric: 1, constraints: {nullable: false}}
+              - column: {name: created_at, type: varchar(64), constraints: {nullable: false}}
+              - column: {name: last_checked_at, type: varchar(64)}
+              - column: {name: last_successful_sync_at, type: varchar(64)}
+        - addForeignKeyConstraint: {baseTableName: youtube_playlist_subscriptions, baseColumnNames: user_id, constraintName: fk_playlist_subscriptions_user, referencedTableName: users, referencedColumnNames: id, onDelete: CASCADE}
+        - addUniqueConstraint: {tableName: youtube_playlist_subscriptions, columnNames: user_id,playlist_id, constraintName: uq_playlist_subscription}

@@ -102,6 +102,10 @@ public class WatchedVideoSyncService {
           deleteTree(libraryPath, root);
           deleteIfEmpty(libraryPath.getParent(), root);
         }
+        // A playlist can contain a video that is also linked from a channel.
+        // The canonical user link has one path, so remove any additional
+        // playlist materializations by their stable video-id directory name.
+        removeOtherVideoFolders(root, link.getId().getVideoId());
         userVideos.delete(link);
         links.remove(link);
         resetChannelCursor(video.getChannelId());
@@ -180,7 +184,11 @@ public class WatchedVideoSyncService {
                                          String cookieFile, String proxy) {
     List<String> command = new ArrayList<>();
     command.add(settings.getOrDefault("yt_dlp_path", "yt-dlp"));
-    command.addAll(List.of("--simulate", "--mark-watched", "--no-playlist", "--no-warnings",
+    // Marking watch history does not need a downloadable media format. Without
+    // this, YouTube can accept the watch mark and yt-dlp still exits non-zero
+    // while probing a restricted/formatless video, causing the whole batch to
+    // be retried.
+    command.addAll(List.of("--simulate", "--mark-watched", "--ignore-no-formats-error", "--no-playlist", "--no-warnings",
         "--cookies", cookieFile));
     if (proxy != null && !proxy.isBlank()) command.addAll(List.of("--proxy", proxy));
     String playerClient = settings.getOrDefault("youtube_player_client", "").trim();
@@ -257,6 +265,17 @@ public class WatchedVideoSyncService {
     if (path == null || root == null || path.equals(root) || !path.startsWith(root)) return;
     try (DirectoryStream<Path> entries = Files.newDirectoryStream(path)) {
       if (!entries.iterator().hasNext()) Files.deleteIfExists(path);
+    } catch (Exception ignored) { }
+  }
+
+  private static void removeOtherVideoFolders(Path root, String videoId) {
+    if (root == null || videoId == null || videoId.isBlank() || !Files.isDirectory(root)) return;
+    try (var stream = Files.walk(root, 2)) {
+      for (Path candidate : stream.filter(Files::isDirectory)
+          .filter(path -> videoId.equals(path.getFileName().toString())).toList()) {
+        deleteTree(candidate, root);
+        deleteIfEmpty(candidate.getParent(), root);
+      }
     } catch (Exception ignored) { }
   }
 

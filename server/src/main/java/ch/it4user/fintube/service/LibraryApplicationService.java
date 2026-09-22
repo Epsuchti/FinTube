@@ -1,10 +1,12 @@
 package ch.it4user.fintube.service;
 
 import ch.it4user.fintube.api.contract.model.AddSubscriptionRequest;
+import ch.it4user.fintube.api.contract.model.AddPlaylistSubscriptionRequest;
 import ch.it4user.fintube.api.contract.model.ImportChannelsResult;
 import ch.it4user.fintube.api.contract.model.ImportCookiesRequest;
 import ch.it4user.fintube.api.contract.model.RefreshResult;
 import ch.it4user.fintube.api.contract.model.Subscription;
+import ch.it4user.fintube.api.contract.model.PlaylistSubscription;
 import ch.it4user.fintube.api.contract.model.ToggleSubscriptionRequest;
 import ch.it4user.fintube.api.contract.model.Video;
 import ch.it4user.fintube.api.contract.model.VideoPage;
@@ -22,6 +24,8 @@ import ch.it4user.fintube.persistence.entities.YouTubeChannelEntity;
 import ch.it4user.fintube.persistence.repositories.YouTubeChannelRepository;
 import ch.it4user.fintube.persistence.entities.YouTubeSubscriptionEntity;
 import ch.it4user.fintube.persistence.repositories.YouTubeSubscriptionRepository;
+import ch.it4user.fintube.persistence.entities.YouTubePlaylistSubscriptionEntity;
+import ch.it4user.fintube.persistence.repositories.YouTubePlaylistSubscriptionRepository;
 import ch.it4user.fintube.persistence.repositories.UserVideoRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -69,10 +73,12 @@ public class LibraryApplicationService {
     private static final Duration COOKIE_IMPORT_TIMEOUT = Duration.ofSeconds(180);
     private static final Pattern YOUTUBE_CHANNEL_ID = Pattern.compile("(?<![A-Za-z0-9_-])(UC[A-Za-z0-9_-]{20,})(?![A-Za-z0-9_-])");
     private static final Pattern YOUTUBE_HANDLE = Pattern.compile("[A-Za-z0-9._-]{3,30}");
+    private static final Pattern YOUTUBE_PLAYLIST_ID = Pattern.compile("(?:[?&]list=|^)([A-Za-z0-9_-]{10,})(?:[&#/]|$)");
     private final SettingsService settings;
     private final ApplicationPaths paths;
     private final YouTubeChannelRepository channels;
     private final YouTubeSubscriptionRepository subscriptions;
+    private final YouTubePlaylistSubscriptionRepository playlistSubscriptions;
     private final UserVideoRepository userVideos;
     private final LibraryVideoRepository videos;
     private final AuthorizationService authorization;
@@ -88,6 +94,7 @@ public class LibraryApplicationService {
                                      ApplicationPaths paths,
                                      YouTubeChannelRepository channels,
                                      YouTubeSubscriptionRepository subscriptions,
+                                     YouTubePlaylistSubscriptionRepository playlistSubscriptions,
                                      UserVideoRepository userVideos,
                                      LibraryVideoRepository videos,
                                      AuthorizationService authorization,
@@ -101,6 +108,7 @@ public class LibraryApplicationService {
         this.paths = paths;
         this.channels = channels;
         this.subscriptions = subscriptions;
+        this.playlistSubscriptions = playlistSubscriptions;
         this.userVideos = userVideos;
         this.videos = videos;
         this.authorization = authorization;
@@ -116,6 +124,56 @@ public class LibraryApplicationService {
         return database(() -> {
             AuthService.Principal principal = authorization.requireUser(request);
             return subscriptions.findForUser(principal.id()).stream().map(this::subscription).toList();
+        });
+    }
+
+    public List<PlaylistSubscription> playlistSubscriptions(HttpServletRequest request) {
+        return database(() -> {
+            AuthService.Principal principal = authorization.requireUser(request);
+            return playlistSubscriptions.findByUserIdOrderByName(principal.id()).stream().map(this::playlistSubscription).toList();
+        });
+    }
+
+    @Transactional
+    public void addPlaylistSubscription(HttpServletRequest request, AddPlaylistSubscriptionRequest requestBody) {
+        database(() -> {
+            AuthService.Principal principal = authorization.requireUser(request);
+            requireYouTubeApiKey(principal.id());
+            String playlistId = playlistId(required(requestBody.getPlaylist(), "playlist"));
+            if (playlistSubscriptions.findByUserIdAndPlaylistId(principal.id(), playlistId).isEmpty()) {
+                playlistSubscriptions.save(new YouTubePlaylistSubscriptionEntity(principal.id(), playlistId,
+                        "Playlist " + playlistId, "https://www.youtube.com/playlist?list=" + playlistId, 1, ApplicationClock.now()));
+                audit.event("PLAYLIST_SUBSCRIPTION_ADDED", Map.of("userId", principal.id(), "playlistId", playlistId));
+            }
+            return null;
+        });
+    }
+
+    public RefreshResult refreshPlaylistSubscription(HttpServletRequest request, long id) {
+        return database(() -> {
+            AuthService.Principal principal = authorization.requireUser(request);
+            requireYouTubeApiKey(principal.id());
+            YouTubePlaylistSubscriptionEntity playlist = playlistSubscriptions.findByIdAndUserId(id, principal.id())
+                    .filter(value -> value.getEnabled() == 1).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+            try {
+                watched.reconcile();
+                return new RefreshResult().discovered(sync.syncPlaylist(playlist));
+            } catch (Exception e) {
+                LOG.error("Playlist refresh failed for playlistId={} userId={}", playlist.getPlaylistId(), principal.id(), e);
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "playlist refresh failed", e);
+            }
+        });
+    }
+
+    public void removePlaylistSubscription(HttpServletRequest request, long id) {
+        database(() -> {
+            AuthService.Principal principal = authorization.requireUser(request);
+            try {
+                if (!sync.removePlaylistSubscription(principal.id(), id)) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            } catch (ResponseStatusException e) { throw e;
+            } catch (Exception e) { throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "playlist removal failed", e); }
+            audit.event("PLAYLIST_SUBSCRIPTION_REMOVED", Map.of("userId", principal.id(), "subscriptionId", id));
+            return null;
         });
     }
 
@@ -282,6 +340,15 @@ public class LibraryApplicationService {
                                 "refresh all failed for channel " + subscription.getChannelId(), e);
                     }
                 }
+                for (YouTubePlaylistSubscriptionEntity playlist : playlistSubscriptions.findByUserIdAndEnabled(principal.id(), 1)) {
+                    try {
+                        discovered += sync.syncPlaylist(playlist);
+                    } catch (Exception e) {
+                        LOG.error("Playlist refresh failed for playlistId={} userId={}", playlist.getPlaylistId(), principal.id(), e);
+                        throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                                "refresh all failed for playlist " + playlist.getPlaylistId(), e);
+                    }
+                }
             }
             audit.event("SUBSCRIPTIONS_REFRESH_ALL_COMPLETED",
                     Map.of("userId", principal.id(), "discovered", discovered));
@@ -346,6 +413,20 @@ public class LibraryApplicationService {
                 .url(value.getUrl())
                 .lastCheckedAt(value.getLastCheckedAt())
                 .lastSuccessfulSyncAt(value.getLastSuccessfulSyncAt());
+    }
+
+    private PlaylistSubscription playlistSubscription(YouTubePlaylistSubscriptionEntity value) {
+        return new PlaylistSubscription(value.getId(), value.getPlaylistId(), value.getName(), value.getEnabled() == 1)
+                .url(value.getUrl()).lastCheckedAt(value.getLastCheckedAt())
+                .lastSuccessfulSyncAt(value.getLastSuccessfulSyncAt());
+    }
+
+    private static String playlistId(String value) {
+        String input = value.trim();
+        Matcher matcher = YOUTUBE_PLAYLIST_ID.matcher(input);
+        if (matcher.find()) return matcher.group(1);
+        if (input.matches("[A-Za-z0-9_-]{10,}")) return input;
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "playlist must be a YouTube playlist URL or playlist ID");
     }
 
     private int initialImportCount() {
