@@ -38,7 +38,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Service
 public class SponsorRenditionService {
     private static final Logger LOG = LoggerFactory.getLogger(SponsorRenditionService.class);
-    private static final String VERSION = "sponsor-streamcopy-v1";
+    private static final String VERSION = "sponsor-streamcopy-v2";
     private final ApplicationPaths paths;
     private final SettingsService settings;
     private final FragmentManager fragments;
@@ -63,7 +63,8 @@ public class SponsorRenditionService {
     public record Segment(String file, double seconds, int sourceIndex, double removedSeconds) {}
     public record Plan(String video, String format, boolean progressive, String container,
                        List<Input> inputs, List<Interval> kept, List<Segment> segments,
-                       double duration, long bandwidth, boolean edited) {}
+                       double duration, long bandwidth, int width, int height, double fps,
+                       String codecs, boolean edited) {}
     public record Selection(String id, Plan plan) {}
     public record Media(InputStream stream, long bytes, String type) {}
 
@@ -73,7 +74,8 @@ public class SponsorRenditionService {
                 new Input(f.id(), f.url(), f.audioUrl(), f.startSeconds(), f.seconds())).toList();
         double duration = inputs.stream().mapToDouble(Input::seconds).sum();
         Plan original = new Plan(video, source.format(), source.progressive(), source.container(), inputs,
-                List.of(new Interval(0, duration)), List.of(), duration, 20_000_000, false);
+                List.of(new Interval(0, duration)), List.of(), duration, source.bandwidth(),
+                source.width(), source.height(), source.fps(), source.codecs(), false);
         List<Interval> cuts = mergedCuts(duration, sponsors);
         StringBuilder identity = new StringBuilder(VERSION).append('|').append(video).append('|').append(source.format())
                 .append('|').append(source.progressive()).append('|').append(source.container());
@@ -167,7 +169,8 @@ public class SponsorRenditionService {
             }
             Plan result = removed == 0 ? original : new Plan(original.video(), original.format(), original.progressive(),
                     original.container(), original.inputs(), List.copyOf(kept), List.copyOf(segments),
-                    segments.stream().mapToDouble(Segment::seconds).sum(), original.bandwidth(), true);
+                    segments.stream().mapToDouble(Segment::seconds).sum(), original.bandwidth(),
+                    original.width(), original.height(), original.fps(), original.codecs(), true);
             // Only metadata is published here. No full download, encode job or second playback is needed.
             clear(work);
             Files.createDirectories(work);

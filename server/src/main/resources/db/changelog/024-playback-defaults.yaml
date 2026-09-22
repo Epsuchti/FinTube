@@ -1,0 +1,20 @@
+databaseChangeLog:
+  - changeSet:
+      id: 024-playback-defaults
+      author: fintube
+      changes:
+        - sql:
+            sql: >-
+              UPDATE settings SET value = '1080'
+              WHERE key = 'stream_quality' AND value = '720'
+                AND updated_at = '1970-01-01T00:00:00Z'
+        - sql:
+            sql: >-
+              UPDATE settings SET value = 'aac,opus'
+              WHERE key = 'preferred_audio_codecs' AND value = 'opus,aac'
+                AND updated_at = '1970-01-01T00:00:00Z'
+        - sql:
+            sql: >-
+              UPDATE settings SET value = 'h264,vp9,av1'
+              WHERE key = 'preferred_video_codecs' AND value = 'av1,vp9,h264'
+                AND updated_at = '1970-01-01T00:00:00Z'

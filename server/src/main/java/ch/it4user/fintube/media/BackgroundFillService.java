@@ -108,6 +108,10 @@ public class BackgroundFillService {
       MediaSourceService.Source source = sources.source(video);
       LOG.info("event=BACKGROUND_FILL_SOURCE_RESOLVED video={} jobId={} format={} fragments={} durationSeconds={} expiresAt={}",
           video, id, source.format(), source.fragments().size(), source.duration(), source.expiresAt());
+      if (source.fmp4()) {
+        fillFmp4(video, id, source);
+        return;
+      }
       update(id, "RUNNING", null, 0, source.fragments().size());
       int completed = 0;
       for (MediaSourceService.Fragment part : source.fragments()) {
@@ -156,6 +160,46 @@ public class BackgroundFillService {
       queued.remove(video, id); running.remove(id);
       LOG.debug("event=BACKGROUND_FILL_SLOT_RELEASED video={} jobId={}", video, id);
     }
+  }
+
+  private void fillFmp4(String video, String id, MediaSourceService.Source source) throws Exception {
+    if (source.videoInit() == null) throw new IllegalStateException("fMP4 source has no initialization segment");
+    try {
+      fragments.get(video, source.format() + "-video", "init", source.videoInit(), false);
+    } catch (FragmentManager.ExpiredSourceException expired) {
+      source = refreshFmp4(video, source);
+      fragments.get(video, source.format() + "-video", "init", source.videoInit(), false);
+    }
+    int completed = 0;
+    update(id, "RUNNING", null, 0, source.fragments().size());
+    while (completed < source.fragments().size()) {
+      if (cancelled(id)) return;
+      MediaSourceService.Fragment part = source.fragments().get(completed);
+      try {
+        cacheFmp4Pair(video, source.format(), completed, part);
+      } catch (FragmentManager.ExpiredSourceException expired) {
+        source = refreshFmp4(video, source);
+        cacheFmp4Pair(video, source.format(), completed, source.fragments().get(completed));
+      }
+      completed++;
+      update(id, "RUNNING", null, completed, source.fragments().size());
+    }
+    fragments.markComplete(video, source.format() + "-video", source.fragments().size() + 1);
+    update(id, "COMPLETED", null, completed, source.fragments().size());
+  }
+
+  private void cacheFmp4Pair(String video, String format, int index, MediaSourceService.Fragment part) throws Exception {
+    fragments.get(video, format + "-video", "video" + index, part.url(), false);
+    if (part.audioUrl() == null) throw new IllegalStateException("fMP4 source has no audio segment");
+    fragments.get(video, format + "-audio", "audio" + index, part.audioUrl(), false);
+  }
+
+  private MediaSourceService.Source refreshFmp4(String video, MediaSourceService.Source original) throws Exception {
+    var fresh = sources.refresh(video, "background_fmp4_source_expired");
+    if (!fresh.fmp4() || !fresh.format().equals(original.format())
+        || fresh.fragments().size() != original.fragments().size())
+      throw new IllegalStateException("fMP4 source changed during background fill");
+    return fresh;
   }
 
   private boolean cancelled(String id) {

@@ -112,7 +112,7 @@ export class AdminSettingsPageComponent implements OnInit {
     }
 
     helpFor(key: string): string {
-        if (key === 'stream_quality') return 'Maximum video height for the shared YouTube source. Best compatible allows codec filtering to choose the highest playable option.';
+        if (key === 'stream_quality') return 'Maximum video height for the shared YouTube source (1080p by default). Choose up to 2160p when your Jellyfin clients support the source codec.';
         if (key === 'cache_min_free_gb') return 'The cache evicts the oldest inactive fragments when the filesystem drops below this free-space reserve.';
         if (key === 'background_download_max_mbps') return 'Maximum rate for low-priority prefetch jobs. Playback traffic is not limited by this setting.';
         if (key === 'background_fill_on_playback') return 'When enabled, starting playback also downloads the remaining fragments. When disabled, only requested playback fragments are downloaded.';

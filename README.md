@@ -183,7 +183,7 @@ The defaults are conservative and suitable for most installations:
 
 | Setting | Recommended starting value | Notes |
 | --- | --- | --- |
-| Stream quality | `720p` | Increase after confirming server bandwidth, client codec support, and cache capacity. |
+| Stream quality | `1080p` | Choose up to `2160p` in settings after confirming client codec support, bandwidth, and cache capacity. |
 | Cache retention | `30 days` | Old inactive fragments are removed automatically. |
 | Minimum free cache space | `20 GB` | Increase this on a large shared server. |
 | Default videos to import | `20` | Imports metadata, not full media downloads. |
@@ -196,6 +196,8 @@ The defaults are conservative and suitable for most installations:
 | Mark removed videos watched on YouTube | Disabled | Requires the separate watched-state cookie file for the chosen YouTube account. |
 
 Also set Jellyfin clients to a **Direct Play-friendly** or **Maximum** quality. FinTube chooses one shared YouTube source based on **Stream quality**; Jellyfin's bitrate selector does not change that source.
+
+FinTube prefers H.264 with AAC-LC at the 1080p default. When a higher setting selects YouTube's VP9/AV1 fMP4 HLS source, FinTube proxies the original video and AAC-LC audio as separate HLS tracks without video encoding. This requires the Jellyfin client to accept that 4K codec and fMP4 HLS; set Stream quality back to 1080p if it does not. SponsorBlock fragment cuts are currently applied only to MPEG-TS renditions, not the fMP4 path.
 
 ## Secure remote access
 

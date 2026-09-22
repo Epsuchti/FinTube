@@ -58,6 +58,11 @@ public class PlaybackService {
             String resolvedToken = resolveToken(video, token, request);
             valid(video, resolvedToken);
             var source = sources.source(video);
+            if (source.fmp4()) {
+                reportRuntime(video, resolvedToken, "fmp4:" + source.format(), source.duration());
+                LOG.info("event=PLAYBACK_FMP4_SELECTED video={} format={} height={}", video, source.format(), source.height());
+                return fmp4Master(video, resolvedToken, source);
+            }
             if (backgroundFillOnPlayback()) filler.enqueue(video, "playback_manifest");
             var sponsorSegments = sponsorBlock.skipSegments(video);
             var selected = renditions.select(video, source, sponsorSegments);
@@ -65,8 +70,17 @@ public class PlaybackService {
             LOG.info("event=PLAYBACK_RENDITION_SELECTED video={} rendition={} edited={} durationSeconds={}",
                     video, selected.id(), selected.plan().edited(), selected.plan().duration());
             // A master playlist is the selection point. The referenced VOD and its media never change.
-            return "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=" + selected.plan().bandwidth()
-                    + "\n" + renditionBase(video, selected.id()) + "index.m3u8?token=" + encode(resolvedToken) + "\n";
+            var plan = selected.plan();
+            StringBuilder variant = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=")
+                    .append(Math.max(1, plan.bandwidth()));
+            if (plan.width() > 0 && plan.height() > 0)
+                variant.append(",RESOLUTION=").append(plan.width()).append('x').append(plan.height());
+            if (plan.fps() > 0)
+                variant.append(",FRAME-RATE=").append(String.format(java.util.Locale.ROOT, "%.3f", plan.fps()));
+            if (plan.codecs() != null && !plan.codecs().isBlank())
+                variant.append(",CODECS=\"").append(plan.codecs()).append('"');
+            return variant.append('\n').append(renditionBase(video, selected.id()))
+                    .append("index.m3u8?token=").append(encode(resolvedToken)).append('\n').toString();
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {
@@ -75,15 +89,96 @@ public class PlaybackService {
         }
     }
 
-    private void reportRuntime(String video, String token, SponsorRenditionService.Selection selection) {
+    private static String fmp4Master(String video, String token, MediaSourceService.Source source) {
+        String base = "/play/" + encode(video) + "/fmp4/" + fmp4Key(source.format()) + "/";
+        StringBuilder out = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:7\n")
+                .append("#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"Default\",DEFAULT=YES,AUTOSELECT=YES,URI=\"")
+                .append(base).append("audio/index.m3u8?token=").append(encode(token)).append("\"\n")
+                .append("#EXT-X-STREAM-INF:BANDWIDTH=").append(Math.max(1, source.bandwidth()));
+        if (source.width() > 0 && source.height() > 0)
+            out.append(",RESOLUTION=").append(source.width()).append('x').append(source.height());
+        if (source.fps() > 0)
+            out.append(",FRAME-RATE=").append(String.format(java.util.Locale.ROOT, "%.3f", source.fps()));
+        if (source.codecs() != null) out.append(",CODECS=\"").append(source.codecs()).append('"');
+        return out.append(",AUDIO=\"audio\"\n").append(base).append("video/index.m3u8?token=")
+                .append(encode(token)).append('\n').toString();
+    }
+
+    public String fmp4TrackManifest(String video, String format, String track, String token) {
+        valid(video, token);
         try {
-            if (selection.id().equals(reportedVersions.get(token))) return;
+            var source = sources.source(video);
+            if (!source.fmp4() || !fmp4Key(source.format()).equals(format)
+                    || !("video".equals(track) || "audio".equals(track)))
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            String base = "/play/" + encode(video) + "/fmp4/" + format + "/" + track + "/";
+            StringBuilder out = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-PLAYLIST-TYPE:VOD\n")
+                    .append("#EXT-X-TARGETDURATION:").append(source.targetDuration()).append("\n#EXT-X-MEDIA-SEQUENCE:0\n");
+            if ("video".equals(track)) out.append("#EXT-X-MAP:URI=\"").append(base)
+                    .append("init.mp4?token=").append(encode(token)).append("\"\n");
+            for (int i = 0; i < source.fragments().size(); i++) out.append("#EXTINF:")
+                    .append(String.format(java.util.Locale.ROOT, "%.6f", source.fragments().get(i).seconds()))
+                    .append(",\n").append(base).append(i).append("video".equals(track) ? ".m4s" : ".aac")
+                    .append("?token=").append(encode(token)).append('\n');
+            return out.append("#EXT-X-ENDLIST\n").toString();
+        } catch (ResponseStatusException e) { throw e; }
+        catch (Exception e) { throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "fMP4 playlist unavailable", e); }
+    }
+
+    public Fragment fmp4TrackFragment(String video, String format, String track, Integer index, String token) {
+        valid(video, token);
+        try {
+            var source = sources.source(video);
+            try {
+                return openFmp4TrackFragment(video, format, track, index, source);
+            } catch (FragmentManager.ExpiredSourceException expired) {
+                var refreshed = sources.refresh(video, "fmp4_fragment_source_expired");
+                if (!format.equals(fmp4Key(refreshed.format())) || refreshed.fragments().size() != source.fragments().size())
+                    throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "fMP4 source changed during playback", expired);
+                return openFmp4TrackFragment(video, format, track, index, refreshed);
+            }
+        } catch (ResponseStatusException e) { throw e; }
+        catch (Exception e) { throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "fMP4 fragment unavailable", e); }
+    }
+
+    private Fragment openFmp4TrackFragment(String video, String format, String track, Integer index,
+                                            MediaSourceService.Source source) throws Exception {
+            if (!source.fmp4() || !fmp4Key(source.format()).equals(format)
+                    || !("video".equals(track) || "audio".equals(track)))
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            boolean init = index == null;
+            if (init && !"video".equals(track)) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            if (!init && (index < 0 || index >= source.fragments().size())) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            var part = init ? null : source.fragments().get(index);
+            var uri = init ? source.videoInit() : "video".equals(track) ? part.url() : part.audioUrl();
+            if (uri == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            String key = init ? "init" : track + index;
+            String cacheFormat = source.format() + "-" + track;
+            Path path = fragments.get(video, cacheFormat, key, uri, true);
+            long bytes = Files.size(path);
+            InputStream stream = fragments.open(video, cacheFormat, key, uri, true);
+            return new Fragment(new InputStreamResource(stream), bytes, MediaType.parseMediaType(
+                    "video".equals(track) ? "video/mp4" : "audio/aac"));
+    }
+
+    private static String fmp4Key(String format) {
+        return java.util.Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(format.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    private void reportRuntime(String video, String token, SponsorRenditionService.Selection selection) {
+        reportRuntime(video, token, selection.id(), selection.plan().duration());
+    }
+
+    private void reportRuntime(String video, String token, String version, double duration) {
+        try {
+            if (version.equals(reportedVersions.get(token))) return;
             for (var userVideo : userVideos.findByIdVideoIdIn(java.util.List.of(video))) {
                 if (token.equals(userVideo.getPlaybackToken()))
-                    jellyfin.syncPlaybackRuntime(video, Path.of(userVideo.getLibraryPath()), (long) Math.ceil(selection.plan().duration()));
+                    jellyfin.syncPlaybackRuntime(video, Path.of(userVideo.getLibraryPath()), (long) Math.ceil(duration));
             }
             if (reportedVersions.size() >= 10_000) reportedVersions.clear();
-            reportedVersions.put(token, selection.id());
+            reportedVersions.put(token, version);
         } catch (Exception failure) {
             LOG.warn("event=PLAYBACK_RUNTIME_SYNC_FAILED video={} reason={}", video, failure.toString());
         }

@@ -116,6 +116,20 @@ class FragmentManagerTest {
       exchange.sendResponseHeaders(200, bytes.length);
       try (var out = exchange.getResponseBody()) { out.write(bytes); }
     });
+    server.createContext("/video-fmp4.m3u8", exchange -> {
+      byte[] bytes = """
+          #EXTM3U
+          #EXT-X-VERSION:6
+          #EXT-X-MAP:URI="video/init.mp4"
+          #EXTINF:6,
+          video/0.m4s
+          #EXTINF:6,
+          video/1.m4s
+          #EXT-X-ENDLIST
+          """.getBytes();
+      exchange.sendResponseHeaders(200, bytes.length);
+      try (var out = exchange.getResponseBody()) { out.write(bytes); }
+    });
     server.start();
     source = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/fragment");
   }
@@ -180,7 +194,7 @@ class FragmentManagerTest {
         ]}"
         """);
     MediaSourceService.Source selected = service.select(root);
-    assertEquals("136+140-tsv5", selected.format());
+    assertEquals("136+140-tsv6", selected.format());
     assertEquals("h264", selected.videoCodec());
     assertEquals("aac", selected.audioCodec());
     assertEquals(2, selected.fragments().size());
@@ -188,6 +202,32 @@ class FragmentManagerTest {
     assertEquals(6d, selected.fragments().get(1).startSeconds());
     assertNotNull(selected.fragments().get(1).audioUrl());
     assertFalse(selected.progressive());
+  }
+
+  @Test
+  void missingQualitySettingDefaultsTo1080p() throws Exception {
+    when(settings.value("stream_quality")).thenReturn(null);
+    MediaSourceService service = new MediaSourceService(settings, mediaSources);
+    var root = new ObjectMapper().readTree("""
+        {"duration":12,"formats":[
+          {"format_id":"628","height":2160,"vcodec":"vp09.00.51.08","acodec":"none","ext":"mp4","url":"http://video/4k","fragments":[{"url":"http://video/4k-0","duration":6},{"url":"http://video/4k-1","duration":6}]},
+          {"format_id":"312","height":1080,"vcodec":"avc1.64002a","acodec":"none","ext":"mp4","url":"http://video/1080","fragments":[{"url":"http://video/0","duration":6},{"url":"http://video/1","duration":6}]},
+          {"format_id":"140","height":0,"vcodec":"none","acodec":"mp4a.40.2","ext":"m4a","url":"http://audio","fragments":[{"url":"http://audio/0","duration":6},{"url":"http://audio/1","duration":6}]}
+        ]} """);
+    assertEquals("312+140-tsv6", service.select(root).format());
+  }
+
+  @Test
+  void higherResolutionPairedSourceBeatsLowerProgressiveSource() throws Exception {
+    MediaSourceService service = new MediaSourceService(settings, mediaSources);
+    when(settings.value("stream_quality")).thenReturn("1080");
+    var root = new ObjectMapper().readTree("""
+        {"duration":12,"formats":[
+          {"format_id":"22","height":720,"vcodec":"avc1.64001f","acodec":"mp4a.40.2","ext":"mp4","url":"http://progressive","fragments":[{"url":"http://progressive/0","duration":6},{"url":"http://progressive/1","duration":6}]},
+          {"format_id":"312","height":1080,"vcodec":"avc1.64002a","acodec":"none","ext":"mp4","url":"http://video","fragments":[{"url":"http://video/0","duration":6},{"url":"http://video/1","duration":6}]},
+          {"format_id":"140","height":0,"vcodec":"none","acodec":"mp4a.40.2","ext":"m4a","url":"http://audio","fragments":[{"url":"http://audio/0","duration":6},{"url":"http://audio/1","duration":6}]}
+        ]} """);
+    assertEquals("312+140-tsv6", service.select(root).format());
   }
 
   @Test
@@ -202,11 +242,36 @@ class FragmentManagerTest {
         """.formatted(base, base));
 
     MediaSourceService.Source selected = service.select(root);
-    assertEquals("311+234-tsv5", selected.format());
+    assertEquals("311+234-tsv6", selected.format());
     assertEquals(2, selected.fragments().size());
     assertEquals("http://127.0.0.1:" + server.getAddress().getPort() + "/audio/1.ts",
         selected.fragments().get(1).audioUrl().toString());
     assertFalse(selected.progressive());
+  }
+
+  @Test
+  void sourceSelectorPrefersAacLcAndPreservesFmp4Initialization() throws Exception {
+    MediaSourceService service = new MediaSourceService(settings, mediaSources);
+    when(settings.value("stream_quality")).thenReturn("2160");
+    String base = "http://127.0.0.1:" + server.getAddress().getPort();
+    var root = new ObjectMapper().readTree("""
+        {"duration":12,"formats":[
+          {"format_id":"628","width":3840,"height":2160,"fps":60,"tbr":25000,"vcodec":"vp09.00.51.08","acodec":"none","ext":"mp4","protocol":"m3u8_native","url":"%s/video-fmp4.m3u8"},
+          {"format_id":"233","height":0,"vcodec":"none","acodec":null,"tbr":0,"ext":"mp4","protocol":"m3u8_native","url":"%s/audio.m3u8"},
+          {"format_id":"234","height":0,"vcodec":"none","acodec":null,"tbr":0,"ext":"mp4","protocol":"m3u8_native","url":"%s/audio.m3u8"}
+        ]}
+        """.formatted(base, base, base));
+
+    MediaSourceService.Source selected = service.select(root);
+
+    assertEquals("628+234-fmp4v1", selected.format());
+    assertTrue(selected.fmp4());
+    assertEquals(base + "/video/init.mp4", selected.videoInit().toString());
+    assertEquals("vp09.00.51.08,mp4a.40.2", selected.codecs());
+    assertEquals(3840, selected.width());
+    assertEquals(2160, selected.height());
+    assertEquals(60, selected.fps());
+    assertTrue(selected.bandwidth() >= 25_000_000);
   }
 
   @Test
@@ -224,7 +289,7 @@ class FragmentManagerTest {
 
     MediaSourceService.Source selected = service.select(root);
 
-    assertEquals("312+233-20-tsv5", selected.format());
+    assertEquals("312+233-20-tsv6", selected.format());
     assertEquals("aac", selected.audioCodec());
     assertEquals(2, selected.fragments().size());
   }
@@ -253,16 +318,14 @@ class FragmentManagerTest {
           {"format_id":"251","height":0,"vcodec":"none","acodec":"opus","ext":"webm","url":"http://audio-opus","fragments":[{"url":"http://audio-opus/0","duration":6.02},{"url":"http://audio-opus/1","duration":5.98}]}
         ]}""");
 
-    MediaSourceService.Source selected = service.select(root);
-
-    assertEquals("136+251-tsv5", selected.format());
-    assertEquals("http://audio-opus/0", selected.fragments().getFirst().audioUrl().toString());
+    assertThrows(IllegalStateException.class, () -> service.select(root),
+        "an unmatched AAC timeline must not fall back to Opus in MPEG-TS HLS");
   }
 
   @Test
   void persistedSourceSurvivesServiceRecreation() throws Exception {
     String json = """
-        {"format":"137","videoFormat":"137","duration":12,"targetDuration":6,"videoCodec":"h264","audioCodec":"aac","container":"mp4","progressive":true,
+        {"format":"137","videoFormat":"137","duration":12,"targetDuration":6,"videoCodec":"h264","audioCodec":"aac","container":"mp4","progressive":true,"bandwidth":8000000,"codecs":"avc1.640028,mp4a.40.2","selectionPolicy":"720|h264,vp9|aac,opus||",
          "fragments":[{"id":"v0","url":"http://persisted/0","seconds":6},{"id":"v1","url":"http://persisted/1","seconds":6}]}""";
     mediaSources.save(new MediaSourceEntity("VIDEO1", "137", json, 12, null, java.time.Instant.now().toString()));
     MediaSourceService.Source loaded = new MediaSourceService(settings, mediaSources).source("VIDEO1");

@@ -44,10 +44,11 @@ import org.slf4j.LoggerFactory;
 @Service
 public class MediaSourceService {
   private static final String DEFAULT_PO_TOKEN_PROVIDER_ARGS = "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416";
-  private static final String REMUX_FORMAT_VERSION = "-tsv5";
+  private static final String REMUX_FORMAT_VERSION = "-tsv6";
+  private static final String FMP4_FORMAT_VERSION = "-fmp4v1";
   private static final double TIMELINE_TOLERANCE_SECONDS = 0.250d;
   private static final Logger LOG = LoggerFactory.getLogger(MediaSourceService.class);
-  private static final Pattern EXPIRE = Pattern.compile("(?:^|[?&])expire=(\\d+)");
+  private static final Pattern EXPIRE = Pattern.compile("(?:^|[?&])expire=(\\d+)|/expire/(\\d+)");
   private final SettingsService settingsService;
   private final MediaSourceRepository mediaSourceRepository;
   private final String poTokenProviderUrl;
@@ -114,15 +115,25 @@ public class MediaSourceService {
     private final String container;
     private final Instant expiresAt;
     private final boolean progressive;
+    private final int width;
+    private final int height;
+    private final double fps;
+    private final long bandwidth;
+    private final String codecs;
+    private final URI videoInit;
+    private final String selectionPolicy;
 
     /** Kept for callers compiled against the original vertical-slice API. */
     public Source(String format, List<Fragment> fragments, int duration) {
-      this(format, format, null, fragments, duration, maxTarget(fragments), null, null, null, null, true);
+      this(format, format, null, fragments, duration, maxTarget(fragments), null, null, null, null, true,
+          0, 0, 0, 0, null, null, null);
     }
 
     Source(String format, String videoFormat, String audioFormat, List<Fragment> fragments,
            int duration, int targetDuration, String videoCodec, String audioCodec,
-           String container, Instant expiresAt, boolean progressive) {
+           String container, Instant expiresAt, boolean progressive,
+           int width, int height, double fps, long bandwidth, String codecs, URI videoInit,
+           String selectionPolicy) {
       this.format = format;
       this.videoFormat = videoFormat;
       this.audioFormat = audioFormat;
@@ -134,6 +145,13 @@ public class MediaSourceService {
       this.container = container;
       this.expiresAt = expiresAt;
       this.progressive = progressive;
+      this.width = width;
+      this.height = height;
+      this.fps = fps;
+      this.bandwidth = bandwidth;
+      this.codecs = codecs;
+      this.videoInit = videoInit;
+      this.selectionPolicy = selectionPolicy;
     }
 
     public String format() { return format; }
@@ -147,6 +165,14 @@ public class MediaSourceService {
     public String container() { return container; }
     public Instant expiresAt() { return expiresAt; }
     public boolean progressive() { return progressive; }
+    public int width() { return width; }
+    public int height() { return height; }
+    public double fps() { return fps; }
+    public long bandwidth() { return bandwidth; }
+    public String codecs() { return codecs; }
+    public URI videoInit() { return videoInit; }
+    public boolean fmp4() { return videoInit != null; }
+    public String selectionPolicy() { return selectionPolicy; }
     public boolean expired() { return expiresAt != null && Instant.now().plusSeconds(60).isAfter(expiresAt); }
 
     private static int maxTarget(List<Fragment> fragments) {
@@ -325,11 +351,11 @@ public class MediaSourceService {
    */
   /** Select the best representation under the administrator's quality/codec policy. */
   public Source select(JsonNode root) throws Exception {
-    String quality = setting("stream_quality", "720").toLowerCase(Locale.ROOT);
+    String quality = setting("stream_quality", "1080").toLowerCase(Locale.ROOT);
     int ceiling = "best".equals(quality) || "best-compatible".equals(quality)
         ? Integer.MAX_VALUE : parseQuality(quality);
-    List<String> preferredVideo = codecs("preferred_video_codecs", List.of("av1", "vp9", "h264"));
-    List<String> preferredAudio = codecs("preferred_audio_codecs", List.of("opus", "aac"));
+    List<String> preferredVideo = codecs("preferred_video_codecs", List.of("h264", "vp9", "av1"));
+    List<String> preferredAudio = codecs("preferred_audio_codecs", List.of("aac", "opus"));
     Set<String> allowedVideo = allowed("allowed_video_codecs");
     Set<String> allowedAudio = allowed("allowed_audio_codecs");
 
@@ -348,27 +374,28 @@ public class MediaSourceService {
 
     Comparator<Candidate> videoOrder = Comparator.comparingInt(Candidate::height).reversed()
         .thenComparing(Comparator.comparingInt(Candidate::codecRank).reversed())
+        .thenComparing(Comparator.comparingInt(MediaSourceService::sdrRank).reversed())
         .thenComparing(Comparator.comparingDouble(Candidate::bitrate).reversed());
-    List<Candidate> progressive = all.stream().filter(Candidate::progressive)
-        .filter(c -> directPlayable(c)).sorted(videoOrder).toList();
-    // Fragmented progressive streams retain the complete timeline and can be
-    // fetched by segment. Prefer them over a single full-file URL.
-    for (Candidate candidate : progressive) {
-      Candidate withTimeline = withTimeline(candidate);
-      if (seekable(withTimeline)) return makeSource(root, withTimeline, null, true);
-    }
-
-    List<Candidate> videos = all.stream().filter(Candidate::hasVideo).filter(c -> !c.hasAudio())
+    List<Candidate> videos = all.stream().filter(Candidate::hasVideo)
         .filter(this::directPlayable).filter(c -> seekable(c) || isHls(c)).sorted(videoOrder).toList();
     List<Candidate> audios = all.stream().filter(c -> c.hasAudio() && !c.hasVideo())
+        .filter(c -> "aac".equals(c.audioCodec()))
         .filter(this::directPlayable).filter(c -> seekable(c) || isHls(c)).sorted(Comparator.comparingInt(Candidate::codecRank)
             .reversed().thenComparing(Comparator.comparingInt(MediaSourceService::audioLanguageRank).reversed())
+            .thenComparing(Comparator.comparingInt(MediaSourceService::aacProfileRank).reversed())
             .thenComparing(Comparator.comparingDouble(Candidate::bitrate).reversed())).toList();
     for (Candidate videoCandidate : videos) {
       Candidate video = withTimeline(videoCandidate);
       if (!seekable(video)) continue;
+      if (video.progressive()) {
+        // Progressive fMP4 needs a separate init-map path; use paired HLS instead.
+        if (video.node().path("fragments").path(0).path("initUrl").isMissingNode())
+          return makeSource(root, video, null, true);
+        continue;
+      }
       for (Candidate audioCandidate : audios) {
         Candidate audio = withTimeline(audioCandidate);
+        if (!audio.node().path("fragments").path(0).path("initUrl").isMissingNode()) continue;
         if (seekable(audio) && matchingTimelines(video, audio)) return makeSource(root, video, audio, false);
       }
     }
@@ -393,6 +420,9 @@ public class MediaSourceService {
     if (response.statusCode() < 200 || response.statusCode() > 299)
       throw new IllegalStateException("HLS playlist request returned status " + response.statusCode());
     List<String> lines = response.body().lines().toList();
+    if (lines.stream().anyMatch(line -> line.startsWith("#EXT-X-BYTERANGE:")
+        || line.startsWith("#EXT-X-KEY:") || line.startsWith("#EXT-X-DISCONTINUITY")))
+      return json.createArrayNode();
     for (int i = 0; i < lines.size(); i++) {
       if (!lines.get(i).startsWith("#EXT-X-STREAM-INF:")) continue;
       for (int j = i + 1; j < lines.size(); j++) {
@@ -400,7 +430,12 @@ public class MediaSourceService {
         if (!variant.isBlank() && !variant.startsWith("#")) return hlsFragments(playlist.resolve(variant), depth + 1);
       }
     }
-    if (lines.stream().anyMatch(line -> line.startsWith("#EXT-X-MAP:"))) return json.createArrayNode();
+    URI init = null;
+    for (String line : lines) if (line.startsWith("#EXT-X-MAP:")) {
+      if (line.contains("BYTERANGE=")) return json.createArrayNode();
+      Matcher match = Pattern.compile("URI=\"([^\"]+)\"").matcher(line);
+      if (match.find()) init = playlist.resolve(match.group(1));
+    }
     ArrayNode fragments = json.createArrayNode();
     double duration = -1;
     for (String raw : lines) {
@@ -416,11 +451,14 @@ public class MediaSourceService {
         duration = -1;
       }
     }
+    if (init != null && !fragments.isEmpty()) ((ObjectNode) fragments.get(0)).put("initUrl", init.toString());
     return fragments;
   }
 
   private Source makeSource(JsonNode root, Candidate video, Candidate audio, boolean progressive) {
-    String format = progressive ? video.id() : video.id() + "+" + audio.id() + REMUX_FORMAT_VERSION;
+    URI videoInit = uri(video.node().path("fragments").path(0).path("initUrl").asText(null));
+    String format = progressive ? video.id() : video.id() + "+" + audio.id()
+        + (videoInit == null ? REMUX_FORMAT_VERSION : FMP4_FORMAT_VERSION);
     List<JsonNode> videoParts = parts(video.node());
     List<JsonNode> audioParts = audio == null ? List.of() : parts(audio.node());
     int count = videoParts.size();
@@ -449,9 +487,24 @@ public class MediaSourceService {
     }
     int target = 1;
     for (Fragment f : fragments) target = Math.max(target, (int) Math.ceil(f.seconds()));
+    String rawVideoCodec = rawCodec(video.node(), "vcodec");
+    String rawAudioCodec = audio == null ? rawCodec(video.node(), "acodec") : rawCodec(audio.node(), "acodec");
+    if ("none".equals(rawAudioCodec) && audio != null && likelyHlsAudio(audio.node()))
+      rawAudioCodec = aacProfileRank(audio) > 0 ? "mp4a.40.2" : "mp4a.40.5";
+    int height = video.height();
+    int width = video.node().path("width").asInt(0);
+    double fps = video.node().path("fps").asDouble(0);
+    double videoKbps = video.node().path("vbr").asDouble(video.bitrate());
+    double audioKbps = audio == null ? 0 : audio.node().path("abr").asDouble(audio.bitrate());
+    long bandwidth = (long) Math.ceil(Math.max(0, videoKbps + audioKbps) * 1200);
+    if (bandwidth == 0) bandwidth = switch (height) {
+      case 0 -> 8_000_000;
+      default -> height <= 720 ? 6_000_000 : height <= 1080 ? 12_000_000 : height <= 1440 ? 20_000_000 : 35_000_000;
+    };
+    String codecTags = codecTag(rawVideoCodec, video.videoCodec()) + "," + codecTag(rawAudioCodec, audio == null ? video.audioCodec() : audio.audioCodec());
     return new Source(format, video.id(), audio == null ? null : audio.id(), fragments,
         (int) Math.ceil(total), target, video.videoCodec(), audio == null ? video.audioCodec() : audio.audioCodec(),
-        video.ext(), expiry, progressive);
+        video.ext(), expiry, progressive, width, height, fps, bandwidth, codecTags, videoInit, policyKey());
   }
 
   private List<JsonNode> parts(JsonNode format) {
@@ -483,8 +536,18 @@ public class MediaSourceService {
     if (format.path("fragments").isArray()) format.path("fragments").forEach(result::add);
     return result;
   }
-  private static boolean currentFormat(Source source) {
-    return source.progressive() || source.format().endsWith(REMUX_FORMAT_VERSION);
+  private boolean currentFormat(Source source) {
+    return source.bandwidth() > 0 && source.codecs() != null
+        && policyKey().equals(source.selectionPolicy())
+        && (source.progressive() || source.format().endsWith(REMUX_FORMAT_VERSION)
+            || source.format().endsWith(FMP4_FORMAT_VERSION));
+  }
+
+  private String policyKey() {
+    return String.join("|", setting("stream_quality", "1080"),
+        setting("preferred_video_codecs", "h264,vp9,av1"),
+        setting("preferred_audio_codecs", "aac,opus"),
+        setting("allowed_video_codecs", ""), setting("allowed_audio_codecs", ""));
   }
   private boolean seekable(Candidate candidate) { return candidate.node().path("fragments").isArray() && candidate.node().path("fragments").size() > 1; }
   private static boolean isHls(Candidate candidate) { return isHls(candidate.node()); }
@@ -509,6 +572,26 @@ public class MediaSourceService {
     if (preference >= 0) return preference;
     String note = candidate.node().path("format_note").asText("").toLowerCase(Locale.ROOT);
     return note.contains("original") || note.contains("default") ? 1 : 0;
+  }
+
+  private static int aacProfileRank(Candidate candidate) {
+    if (!"aac".equals(candidate.audioCodec())) return 0;
+    String codec = rawCodec(candidate.node(), "acodec").toLowerCase(Locale.ROOT);
+    if (codec.startsWith("mp4a.40.2")) return 2;
+    if (codec.startsWith("mp4a.40.5") || codec.startsWith("mp4a.40.29")) return -1;
+    String id = candidate.id().split("-", 2)[0];
+    if ("140".equals(id) || "234".equals(id)) return 2;
+    if ("139".equals(id) || "233".equals(id)) return -1;
+    return 0;
+  }
+
+  private static String codecTag(String raw, String normalized) {
+    if (raw != null && !raw.isBlank() && !"none".equalsIgnoreCase(raw)) return raw;
+    return "aac".equals(normalized) ? "mp4a.40.2" : normalized;
+  }
+
+  private static int sdrRank(Candidate candidate) {
+    return "SDR".equalsIgnoreCase(candidate.node().path("dynamic_range").asText("SDR")) ? 1 : 0;
   }
 
   private boolean directPlayable(Candidate c) {
@@ -544,6 +627,11 @@ public class MediaSourceService {
     if (source.audioCodec() != null) out.put("audioCodec", source.audioCodec());
     if (source.container() != null) out.put("container", source.container());
     out.put("progressive", source.progressive());
+    out.put("width", source.width()); out.put("height", source.height());
+    out.put("fps", source.fps()); out.put("bandwidth", source.bandwidth());
+    if (source.codecs() != null) out.put("codecs", source.codecs());
+    if (source.videoInit() != null) out.put("videoInit", source.videoInit().toString());
+    if (source.selectionPolicy() != null) out.put("selectionPolicy", source.selectionPolicy());
     if (source.expiresAt() != null) out.put("expiresAt", source.expiresAt().toString());
     ArrayNode fragments = out.putArray("fragments");
     for (Fragment f : source.fragments()) {
@@ -570,7 +658,9 @@ public class MediaSourceService {
         x.path("audioFormat").isMissingNode() ? null : x.path("audioFormat").asText(), fragments,
         x.path("duration").asInt(), x.path("targetDuration").asInt(Source.maxTarget(fragments)),
         textOrNull(x, "videoCodec"), textOrNull(x, "audioCodec"), textOrNull(x, "container"), expiry,
-        x.path("progressive").asBoolean(true));
+        x.path("progressive").asBoolean(true), x.path("width").asInt(0), x.path("height").asInt(0),
+        x.path("fps").asDouble(0), x.path("bandwidth").asLong(0), textOrNull(x, "codecs"),
+        uri(x.path("videoInit").asText(null)), textOrNull(x, "selectionPolicy"));
   }
 
   private static URI uriRequired(String value) { URI result = uri(value); if (result == null) throw new IllegalArgumentException("persisted source has no URL"); return result; }
@@ -584,9 +674,10 @@ public class MediaSourceService {
   private static Instant expiry(JsonNode format) {
     String value = format.path("url").asText(""); Matcher matcher = EXPIRE.matcher(value);
     if (!matcher.find()) return null;
-    try { return Instant.ofEpochSecond(Long.parseLong(matcher.group(1))); } catch (NumberFormatException ignored) { return null; }
+    try { return Instant.ofEpochSecond(Long.parseLong(matcher.group(1) == null ? matcher.group(2) : matcher.group(1))); }
+    catch (NumberFormatException ignored) { return null; }
   }
-  private int parseQuality(String value) { try { return Integer.parseInt(value); } catch (NumberFormatException e) { return 720; } }
+  private int parseQuality(String value) { try { return Integer.parseInt(value); } catch (NumberFormatException e) { return 1080; } }
   private String setting(String key, String fallback) {
     String value = settingsService.value(key);
     return value == null ? fallback : value;
