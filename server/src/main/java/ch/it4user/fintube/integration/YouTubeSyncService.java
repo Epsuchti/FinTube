@@ -813,6 +813,7 @@ public class YouTubeSyncService {
     boolean newLink = link == null;
     Path existingPath = link == null ? null : Path.of(link.getLibraryPath()).toAbsolutePath().normalize();
     if (migrateExisting) migrateLibraryDirectory(existingPath, path, root);
+    boolean newFolder = !Files.isDirectory(channelPath);
     Files.createDirectories(path);
     downloadThumbnail(folderThumbnail, channelPath.resolve("folder.jpg"));
     String token = link == null ? UUID.randomUUID().toString().replace("-", "") : link.getPlaybackToken();
@@ -833,6 +834,7 @@ public class YouTubeSyncService {
     }
     if (newLink) userVideos.save(link);
     jellyfin.afterLibraryGeneration(video, path, duration);
+    if (newFolder) jellyfin.afterManagedFolderGeneration(root, channelPath);
   }
 
   private void downloadThumbnail(String url, Path target) {

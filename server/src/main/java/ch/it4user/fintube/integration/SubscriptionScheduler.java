@@ -42,6 +42,7 @@ public class SubscriptionScheduler {
     String cutoff = Instant.now().minusSeconds(minutes * 60L).toString();
     try {
       try (JellyfinSyncService.RefreshBatch ignored = jellyfin.beginRefreshBatch()) {
+        jellyfin.reconcileSorting();
         watched.reconcile();
         Set<String> syncedChannels = new HashSet<>();
         for (YouTubeSubscriptionRepository.DueSubscriptionView due : subscriptions.findDueSubscriptions(cutoff)) {

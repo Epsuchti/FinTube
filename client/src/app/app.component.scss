@@ -55,10 +55,14 @@ button:hover:not(:disabled), .button:hover { border-color: #46617f; background: 
 .count-pill { flex: none; border: 1px solid #2b4261; border-radius: 99px; padding: 8px 12px; color: #99b5d3; font-size: .77rem; }
 .count-good { border-color: #315c58; color: #a5edc8; background: #153d37; }
 .panel { margin-bottom: 22px; border: 1px solid #213650; border-radius: 14px; background: #101e31; }
-.add-panel { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 1.2fr); align-items: center; gap: 28px; padding: 22px; }
-.add-panel p { margin-bottom: 0; line-height: 1.5; }
-.inline-form { display: flex; align-items: end; gap: 10px; }
-.inline-form input { flex: 1; }
+.add-panel { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(300px, .8fr); align-items: center; gap: 30px; padding: 24px; }
+.add-copy h2 { margin-bottom: 10px; }
+.add-copy p { max-width: 650px; margin-bottom: 0; line-height: 1.55; }
+.add-controls { display: grid; gap: 14px; }
+.inline-form { display: grid; gap: 7px; }
+.inline-form label { color: #9db0c8; font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.inline-form > div { display: flex; align-items: end; gap: 10px; }
+.inline-form input { min-width: 0; flex: 1; }
 .inline-form button { white-space: nowrap; }
 .heading-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
 .import-panel { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(270px, .8fr); gap: 30px; padding: 24px; }
@@ -218,7 +222,7 @@ td select { min-width: 94px; padding: 6px 8px; font-size: .75rem; }
   .topbar-actions .identity { display: none; }
   .page-heading { align-items: flex-start; flex-direction: column; }
   .heading-actions { width: 100%; justify-content: space-between; }
-  .inline-form { align-items: stretch; flex-direction: column; }
+  .inline-form > div { align-items: stretch; flex-direction: column; }
   .sidebar { grid-template-columns: repeat(2, 1fr); }
   .media-card { padding: 14px; }
   .subscription-card { padding: 16px; }

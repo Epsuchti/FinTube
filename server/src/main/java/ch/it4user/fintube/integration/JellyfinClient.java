@@ -65,6 +65,9 @@ public class JellyfinClient {
 
   public record PlayedItems(boolean success, List<PlayedItem> items, String message) {}
 
+  /** Outcome of applying a folder preference for every Jellyfin user who can see it. */
+  public record SortingResult(boolean itemFound, int users, int changed, int failed, String message) {}
+
   public Configuration configuration() {
     try {
       Map<String, String> s = settings();
@@ -192,6 +195,134 @@ public class JellyfinClient {
       if (configuredUser.equals(id) || configuredUser.equalsIgnoreCase(name)) return id;
     }
     return "";
+  }
+
+  /**
+   * Set one FinTube-managed folder's sort order for users who can access it.
+   * Display preferences are replaced by Jellyfin, so this deliberately reads
+   * and writes the complete DTO and changes only the three sorting fields.
+   */
+  public synchronized SortingResult ensureFolderSorting(Path folder, Path managedRoot,
+                                                         String sortBy, String sortOrder) {
+    Configuration c = configuration();
+    if (!c.enabled() || !c.configured()) {
+      return new SortingResult(false, 0, 0, 0, "Jellyfin integration is disabled or not configured");
+    }
+    if (folder == null || managedRoot == null || sortBy == null || sortBy.isBlank()
+        || sortOrder == null || sortOrder.isBlank()) {
+      return new SortingResult(false, 0, 0, 1, "invalid sorting request");
+    }
+    try {
+      Optional<String> itemId = findFolderId(c, folder, managedRoot);
+      if (itemId.isEmpty()) {
+        return new SortingResult(false, 0, 0, 0, "folder has not been indexed by Jellyfin");
+      }
+      JsonNode users = users(c);
+      if (!users.isArray()) return new SortingResult(true, 0, 0, 1, "Jellyfin users could not be read");
+      int relevant = 0;
+      int changed = 0;
+      int failed = 0;
+      for (JsonNode user : users) {
+        if (user.path("Policy").path("IsDisabled").asBoolean(false)) continue;
+        String userId = user.path("Id").asText("");
+        if (userId.isBlank()) continue;
+        Optional<String> preferencesId = displayPreferencesId(c, userId, itemId.get());
+        if (preferencesId.isEmpty()) continue; // The user cannot see this item.
+        relevant++;
+        Operation result = ensureSorting(c, userId, preferencesId.get(), sortBy, sortOrder);
+        if (result.success()) {
+          if (result.statusCode() != 304) changed++;
+        } else {
+          failed++;
+        }
+      }
+      return new SortingResult(true, relevant, changed, failed,
+          failed == 0 ? "sorting reconciled" : "sorting failed for " + failed + " Jellyfin user(s)");
+    } catch (Exception e) {
+      return new SortingResult(false, 0, 0, 1, "Jellyfin is unreachable");
+    }
+  }
+
+  private Optional<String> findFolderId(Configuration c, Path folder, Path managedRoot) throws Exception {
+    Path normalizedFolder = folder.toAbsolutePath().normalize();
+    Path normalizedRoot = managedRoot.toAbsolutePath().normalize();
+    if (!normalizedFolder.startsWith(normalizedRoot)) return Optional.empty();
+    String relative = normalizedRoot.relativize(normalizedFolder).toString().replace('\\', '/');
+
+    // A user's FinTube root may itself be configured as a Jellyfin virtual folder.
+    HttpResponse<String> virtual = request(c, "GET", "/Library/VirtualFolders", "");
+    if (virtual.statusCode() / 100 == 2) {
+      JsonNode folders = json.readTree(virtual.body());
+      if (folders.isArray()) {
+        for (JsonNode candidate : folders) {
+          for (JsonNode location : candidate.path("Locations")) {
+            if (sameManagedPath(location.asText(""), normalizedFolder, relative)) {
+              String id = candidate.path("ItemId").asText("");
+              if (!id.isBlank()) return Optional.of(id);
+            }
+          }
+        }
+      }
+    }
+
+    List<String> queries = List.of(
+        "/Items?Recursive=true&Fields=Path&Limit=100&Path=" + enc(normalizedFolder.toString()),
+        "/Items?Recursive=true&Fields=Path&Limit=100&SearchTerm=" + enc(normalizedFolder.getFileName().toString()));
+    for (String query : queries) {
+      HttpResponse<String> r = request(c, "GET", query, "");
+      if (r.statusCode() / 100 != 2) continue;
+      JsonNode items = json.readTree(r.body()).path("Items");
+      if (!items.isArray()) continue;
+      for (JsonNode item : items) {
+        if (!item.path("IsFolder").asBoolean(false)) continue;
+        if (!sameManagedPath(item.path("Path").asText(""), normalizedFolder, relative)) continue;
+        String id = item.path("Id").asText("");
+        if (!id.isBlank()) return Optional.of(id);
+      }
+    }
+    return Optional.empty();
+  }
+
+  private JsonNode users(Configuration c) throws Exception {
+    HttpResponse<String> r = request(c, "GET", "/Users", "");
+    if (r.statusCode() / 100 != 2) return json.createArrayNode();
+    return json.readTree(r.body());
+  }
+
+  private Optional<String> displayPreferencesId(Configuration c, String userId, String itemId)
+      throws Exception {
+    HttpResponse<String> r = request(c, "GET", "/Users/" + encPath(userId) + "/Items/"
+        + encPath(itemId) + "?Fields=DisplayPreferencesId", "");
+    if (r.statusCode() / 100 != 2) return Optional.empty();
+    JsonNode item = json.readTree(r.body());
+    if (!item.path("IsFolder").asBoolean(false)) return Optional.empty();
+    String value = item.path("DisplayPreferencesId").asText("");
+    return Optional.of(value.isBlank() ? itemId : value);
+  }
+
+  private Operation ensureSorting(Configuration c, String userId, String preferencesId,
+                                  String sortBy, String sortOrder) throws Exception {
+    String path = "/DisplayPreferences/" + encPath(preferencesId)
+        + "?userId=" + enc(userId) + "&client=emby";
+    HttpResponse<String> current = request(c, "GET", path, "");
+    if (current.statusCode() / 100 != 2) {
+      return new Operation(false, current.statusCode(), operationFailureMessage(current.statusCode()));
+    }
+    JsonNode parsed = json.readTree(current.body());
+    if (!parsed.isObject()) return new Operation(false, 500, "invalid Jellyfin display preferences");
+    ObjectNode body = (ObjectNode) parsed;
+    boolean correct = sortBy.equalsIgnoreCase(body.path("SortBy").asText(""))
+        && sortOrder.equalsIgnoreCase(body.path("SortOrder").asText(""))
+        && body.path("RememberSorting").asBoolean(false);
+    if (correct) return new Operation(true, 304, "sorting already correct");
+    body.put("SortBy", sortBy);
+    body.put("SortOrder", sortOrder);
+    body.put("RememberSorting", true);
+    HttpResponse<String> updated = request(c, "POST", path, json.writeValueAsString(body));
+    if (updated.statusCode() / 100 == 2) {
+      return new Operation(true, updated.statusCode(), "sorting updated");
+    }
+    return new Operation(false, updated.statusCode(), operationFailureMessage(updated.statusCode()));
   }
 
   /**
@@ -348,6 +479,20 @@ public class JellyfinClient {
       Path r = root.toAbsolutePath().normalize();
       return p.equals(r) || p.startsWith(r);
     } catch (RuntimeException e) { return false; }
+  }
+
+  static boolean sameManagedPath(String candidate, Path expected, String relativeToManagedRoot) {
+    if (candidate == null || candidate.isBlank() || expected == null) return false;
+    try {
+      Path actual = Path.of(candidate).toAbsolutePath().normalize();
+      if (actual.equals(expected.toAbsolutePath().normalize())) return true;
+      if (relativeToManagedRoot == null || relativeToManagedRoot.isBlank()) return false;
+      String actualPath = actual.toString().replace('\\', '/');
+      String suffix = relativeToManagedRoot.replace('\\', '/').replaceAll("^/+|/+$", "");
+      return !suffix.isBlank() && actualPath.endsWith("/" + suffix);
+    } catch (RuntimeException e) {
+      return false;
+    }
   }
 
   static String enc(String value) { return URLEncoder.encode(value, StandardCharsets.UTF_8); }

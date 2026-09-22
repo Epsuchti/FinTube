@@ -39,6 +39,7 @@ export class SubscriptionsPageComponent implements OnInit {
     readonly liveStreamDownloadCounts = signal<Record<number, number>>({});
     readonly editingId = signal<number | null>(null);
     readonly cookieImportOpen = signal(false);
+    readonly addPanelOpen = signal(false);
     readonly cookieImport = signal<CookieImportFile | null>(null);
     @Output() videoCountChange = new EventEmitter<number>();
     @ViewChild('cookieFile') private cookieFile?: ElementRef<HTMLInputElement>;
@@ -108,6 +109,10 @@ export class SubscriptionsPageComponent implements OnInit {
 
     toggleCookieImport(): void {
         this.cookieImportOpen.update(open => !open);
+    }
+
+    toggleAddPanel(): void {
+        this.addPanelOpen.update(open => !open);
     }
 
     selectCookieFile(event: Event): void {
