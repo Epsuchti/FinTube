@@ -5,6 +5,7 @@ import ch.it4user.fintube.api.contract.model.Profile;
 import ch.it4user.fintube.api.contract.model.Role;
 import ch.it4user.fintube.api.contract.model.UpdateYouTubeApiKeyRequest;
 import ch.it4user.fintube.api.contract.model.YouTubeApiKeyStatus;
+import ch.it4user.fintube.api.contract.model.MediaPreferences;
 import ch.it4user.fintube.core.AuditLogger;
 import ch.it4user.fintube.core.ApplicationClock;
 import ch.it4user.fintube.persistence.entities.UserEntity;
@@ -24,14 +25,17 @@ public class AccountApplicationService {
     private final AuthorizationService authorization;
     private final AuditLogger audit;
     private final UserYouTubeApiKeyService youtubeApiKeys;
+    private final UserMediaPreferencesService mediaPreferences;
 
     public AccountApplicationService(UserRepository users, AuthService auth, AuthorizationService authorization,
-                                     AuditLogger audit, UserYouTubeApiKeyService youtubeApiKeys) {
+                                     AuditLogger audit, UserYouTubeApiKeyService youtubeApiKeys,
+                                     UserMediaPreferencesService mediaPreferences) {
         this.users = users;
         this.auth = auth;
         this.authorization = authorization;
         this.audit = audit;
         this.youtubeApiKeys = youtubeApiKeys;
+        this.mediaPreferences = mediaPreferences;
     }
 
     public Profile currentUser(HttpServletRequest request) {
@@ -75,5 +79,16 @@ public class AccountApplicationService {
         AuthService.Principal principal = authorization.requireUser(request);
         youtubeApiKeys.uploadWatchCookie(principal.id(), file);
         audit.event("YOUTUBE_WATCH_COOKIE_UPLOADED", java.util.Map.of("userId", principal.id()));
+    }
+
+    public MediaPreferences mediaPreferences(HttpServletRequest request) {
+        return mediaPreferences.get(authorization.requireUser(request).id());
+    }
+
+    public MediaPreferences updateMediaPreferences(HttpServletRequest request, MediaPreferences requestBody) {
+        AuthService.Principal principal = authorization.requireUser(request);
+        MediaPreferences updated = mediaPreferences.update(principal.id(), requestBody);
+        audit.event("MEDIA_PREFERENCES_UPDATED", java.util.Map.of("userId", principal.id(), "quality", updated.getQuality()));
+        return updated;
     }
 }

@@ -1,0 +1,11 @@
+databaseChangeLog:
+  - changeSet:
+      id: 025-user-media-preferences
+      author: fintube
+      changes:
+        - addColumn:
+            tableName: users
+            columns:
+              - column: {name: media_quality, type: varchar(16), defaultValue: '1080', constraints: {nullable: false}}
+              - column: {name: preferred_video_codecs, type: varchar(200), defaultValue: 'h264,vp9,av1', constraints: {nullable: false}}
+              - column: {name: preferred_audio_codecs, type: varchar(200), defaultValue: 'aac,opus', constraints: {nullable: false}}

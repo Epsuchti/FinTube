@@ -183,11 +183,13 @@ The defaults are conservative and suitable for most installations:
 
 | Setting | Recommended starting value | Notes |
 | --- | --- | --- |
-| Stream quality | `1080p` | Choose up to `2160p` in settings after confirming client codec support, bandwidth, and cache capacity. |
+| Personal media quality | `1080p` | Each user chooses it in Account settings; choose up to `2160p` after confirming client codec support, bandwidth, and cache capacity. |
+| Preferred video codecs | `h264,vp9,av1` | Per-user order used when choosing a source. |
+| Preferred audio codecs | `aac,opus` | Per-user order used when choosing an audio track. |
 | Cache retention | `30 days` | Old inactive fragments are removed automatically. |
 | Minimum free cache space | `20 GB` | Increase this on a large shared server. |
 | Default videos to import | `20` | Imports metadata, not full media downloads. |
-| Videos to pre-download | `0` | On-demand streaming avoids unexpected storage use. |
+| Videos to download | `0` | When set per channel, FinTube downloads local media files (preferably MP4) into that user's Jellyfin folder; completed files play without FinTube streaming. |
 | Subscription sync interval | `60 minutes` | A good balance between freshness and API usage. |
 | PO token provider | Enabled | Recommended; leave the manual PO-token field empty. |
 | Jellyfin automatic refresh | Enabled | Makes newly generated items appear automatically. |
@@ -195,9 +197,9 @@ The defaults are conservative and suitable for most installations:
 | Remove watched videos during sync | Disabled | Enable after selecting the Jellyfin user whose play state should drive removal. |
 | Mark removed videos watched on YouTube | Disabled | Requires the separate watched-state cookie file for the chosen YouTube account. |
 
-Also set Jellyfin clients to a **Direct Play-friendly** or **Maximum** quality. FinTube chooses one shared YouTube source based on **Stream quality**; Jellyfin's bitrate selector does not change that source.
+Also set Jellyfin clients to a **Direct Play-friendly** or **Maximum** quality. FinTube chooses a YouTube source for each user's Account media preferences; Jellyfin's bitrate selector does not change that source.
 
-FinTube prefers H.264 with AAC-LC at the 1080p default. When a higher setting selects YouTube's VP9/AV1 fMP4 HLS source, FinTube proxies the original video and AAC-LC audio as separate HLS tracks without video encoding. This requires the Jellyfin client to accept that 4K codec and fMP4 HLS; set Stream quality back to 1080p if it does not. SponsorBlock fragment cuts are currently applied only to MPEG-TS renditions, not the fMP4 path.
+FinTube defaults to H.264, VP9, then AV1 video and AAC, then Opus audio at 1080p. When a higher personal setting selects YouTube's VP9/AV1 fMP4 HLS source, FinTube proxies the original video and AAC-LC audio as separate HLS tracks without video encoding. This requires the Jellyfin client to accept that 4K codec and fMP4 HLS; set Media quality back to 1080p if it does not. SponsorBlock fragment cuts are currently applied only to MPEG-TS renditions, not the fMP4 path.
 
 ## Secure remote access
 

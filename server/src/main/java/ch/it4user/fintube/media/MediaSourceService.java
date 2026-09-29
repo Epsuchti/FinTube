@@ -2,6 +2,7 @@ package ch.it4user.fintube.media;
 
 import ch.it4user.fintube.core.ApplicationClock;
 import ch.it4user.fintube.core.SettingsService;
+import ch.it4user.fintube.api.contract.model.MediaPreferences;
 import ch.it4user.fintube.persistence.entities.MediaSourceEntity;
 import ch.it4user.fintube.persistence.repositories.MediaSourceRepository;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -20,6 +21,7 @@ import java.net.URLEncoder;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -194,17 +196,24 @@ public class MediaSourceService {
 
   /** Load a valid persisted probe before invoking yt-dlp after a restart. */
   public Source source(String video) throws Exception {
-    Source memory = sources.get(video);
-    if (memory != null && !memory.expired() && currentFormat(memory)) {
+    return source(video, null);
+  }
+
+  /** Resolve a source under the requesting user's media preferences. */
+  public Source source(String video, MediaPreferences preferences) throws Exception {
+    String policy = policyKey(preferences);
+    String key = sourceKey(video, policy, preferences != null);
+    Source memory = sources.get(key);
+    if (memory != null && !memory.expired() && currentFormat(memory, policy)) {
       LOG.debug("event=MEDIA_SOURCE_CACHE_HIT video={} cache=memory format={} fragments={}",
           video, memory.format(), memory.fragments().size());
       return memory;
     }
     String memoryReason = memory == null ? "memory_miss"
         : memory.expired() ? "memory_expired" : "memory_format_changed";
-    Source persisted = load(video);
-    if (persisted != null && !persisted.expired() && currentFormat(persisted)) {
-      sources.put(video, persisted);
+    Source persisted = load(key);
+    if (persisted != null && !persisted.expired() && currentFormat(persisted, policy)) {
+      sources.put(key, persisted);
       LOG.debug("event=MEDIA_SOURCE_CACHE_HIT video={} cache=persisted format={} fragments={}",
           video, persisted.format(), persisted.fragments().size());
       return persisted;
@@ -214,15 +223,19 @@ public class MediaSourceService {
     String reason = memory == null ? persistedReason : memoryReason;
     LOG.info("event=MEDIA_SOURCE_REFRESH_REQUIRED video={} reason={} memoryFormat={} memoryExpiresAt={} persistedFormat={} persistedExpiresAt={}",
         video, reason, formatOrNull(memory), expiresAtOrNull(memory), formatOrNull(persisted), expiresAtOrNull(persisted));
-    return refresh(video, reason);
+    return refresh(video, preferences, reason);
   }
 
   /** Force a new yt-dlp probe, replacing the persisted source URL set. */
   public Source refresh(String video) throws Exception {
-    return refresh(video, "explicit");
+    return refresh(video, null, "explicit");
   }
 
   public synchronized Source refresh(String video, String reason) throws Exception {
+    return refresh(video, null, reason);
+  }
+
+  public synchronized Source refresh(String video, MediaPreferences preferences, String reason) throws Exception {
     LOG.info("event=MEDIA_SOURCE_REFRESH_STARTED video={} reason={}", video, reason);
     var settings = settingsService.values(false);
     String bin = settings.getOrDefault("yt_dlp_path", "yt-dlp");
@@ -257,9 +270,10 @@ public class MediaSourceService {
           + (detail.isBlank() ? "" : ": " + detail));
     }
     JsonNode root = json.readTree(result.stdout());
-    Source selected = select(root);
-    persist(video, selected);
-    sources.put(video, selected);
+    Source selected = select(root, preferences);
+    String key = sourceKey(video, policyKey(preferences), preferences != null);
+    persist(key, selected);
+    sources.put(key, selected);
     LOG.info("event=MEDIA_SOURCE_REFRESH_SUCCEEDED video={} reason={} format={} videoFormat={} audioFormat={} fragments={} durationSeconds={} progressive={} expiresAt={}",
         video, reason, selected.format(), selected.videoFormat(), selected.audioFormat(), selected.fragments().size(),
         selected.duration(), selected.progressive(), selected.expiresAt());
@@ -351,11 +365,15 @@ public class MediaSourceService {
    */
   /** Select the best representation under the administrator's quality/codec policy. */
   public Source select(JsonNode root) throws Exception {
-    String quality = setting("stream_quality", "1080").toLowerCase(Locale.ROOT);
+    return select(root, null);
+  }
+
+  public Source select(JsonNode root, MediaPreferences preferences) throws Exception {
+    String quality = preference(preferences == null || preferences.getQuality() == null ? null : preferences.getQuality().getValue(), "stream_quality", "1080").toLowerCase(Locale.ROOT);
     int ceiling = "best".equals(quality) || "best-compatible".equals(quality)
         ? Integer.MAX_VALUE : parseQuality(quality);
-    List<String> preferredVideo = codecs("preferred_video_codecs", List.of("h264", "vp9", "av1"));
-    List<String> preferredAudio = codecs("preferred_audio_codecs", List.of("aac", "opus"));
+    List<String> preferredVideo = codecs(preferences == null ? null : preferences.getPreferredVideoCodecs(), "preferred_video_codecs", List.of("h264", "vp9", "av1"));
+    List<String> preferredAudio = codecs(preferences == null ? null : preferences.getPreferredAudioCodecs(), "preferred_audio_codecs", List.of("aac", "opus"));
     Set<String> allowedVideo = allowed("allowed_video_codecs");
     Set<String> allowedAudio = allowed("allowed_audio_codecs");
 
@@ -390,13 +408,13 @@ public class MediaSourceService {
       if (video.progressive()) {
         // Progressive fMP4 needs a separate init-map path; use paired HLS instead.
         if (video.node().path("fragments").path(0).path("initUrl").isMissingNode())
-          return makeSource(root, video, null, true);
+          return makeSource(root, video, null, true, preferences);
         continue;
       }
       for (Candidate audioCandidate : audios) {
         Candidate audio = withTimeline(audioCandidate);
         if (!audio.node().path("fragments").path(0).path("initUrl").isMissingNode()) continue;
-        if (seekable(audio) && matchingTimelines(video, audio)) return makeSource(root, video, audio, false);
+        if (seekable(audio) && matchingTimelines(video, audio)) return makeSource(root, video, audio, false, preferences);
       }
     }
     throw new IllegalStateException("no seekable fragmented representation available");
@@ -455,7 +473,7 @@ public class MediaSourceService {
     return fragments;
   }
 
-  private Source makeSource(JsonNode root, Candidate video, Candidate audio, boolean progressive) {
+  private Source makeSource(JsonNode root, Candidate video, Candidate audio, boolean progressive, MediaPreferences preferences) {
     URI videoInit = uri(video.node().path("fragments").path(0).path("initUrl").asText(null));
     String format = progressive ? video.id() : video.id() + "+" + audio.id()
         + (videoInit == null ? REMUX_FORMAT_VERSION : FMP4_FORMAT_VERSION);
@@ -504,7 +522,7 @@ public class MediaSourceService {
     String codecTags = codecTag(rawVideoCodec, video.videoCodec()) + "," + codecTag(rawAudioCodec, audio == null ? video.audioCodec() : audio.audioCodec());
     return new Source(format, video.id(), audio == null ? null : audio.id(), fragments,
         (int) Math.ceil(total), target, video.videoCodec(), audio == null ? video.audioCodec() : audio.audioCodec(),
-        video.ext(), expiry, progressive, width, height, fps, bandwidth, codecTags, videoInit, policyKey());
+        video.ext(), expiry, progressive, width, height, fps, bandwidth, codecTags, videoInit, policyKey(preferences));
   }
 
   private List<JsonNode> parts(JsonNode format) {
@@ -536,17 +554,21 @@ public class MediaSourceService {
     if (format.path("fragments").isArray()) format.path("fragments").forEach(result::add);
     return result;
   }
-  private boolean currentFormat(Source source) {
+  private boolean currentFormat(Source source, String policy) {
     return source.bandwidth() > 0 && source.codecs() != null
-        && policyKey().equals(source.selectionPolicy())
+        && policy.equals(source.selectionPolicy())
         && (source.progressive() || source.format().endsWith(REMUX_FORMAT_VERSION)
             || source.format().endsWith(FMP4_FORMAT_VERSION));
   }
 
   private String policyKey() {
-    return String.join("|", setting("stream_quality", "1080"),
-        setting("preferred_video_codecs", "h264,vp9,av1"),
-        setting("preferred_audio_codecs", "aac,opus"),
+    return policyKey(null);
+  }
+
+  private String policyKey(MediaPreferences preferences) {
+    return String.join("|", preference(preferences == null || preferences.getQuality() == null ? null : preferences.getQuality().getValue(), "stream_quality", "1080"),
+        preference(preferences == null ? null : preferences.getPreferredVideoCodecs(), "preferred_video_codecs", "h264,vp9,av1"),
+        preference(preferences == null ? null : preferences.getPreferredAudioCodecs(), "preferred_audio_codecs", "aac,opus"),
         setting("allowed_video_codecs", ""), setting("allowed_audio_codecs", ""));
   }
   private boolean seekable(Candidate candidate) { return candidate.node().path("fragments").isArray() && candidate.node().path("fragments").size() > 1; }
@@ -682,10 +704,20 @@ public class MediaSourceService {
     String value = settingsService.value(key);
     return value == null ? fallback : value;
   }
-  private List<String> codecs(String key, List<String> fallback) {
-    String value = setting(key, String.join(",", fallback));
+  private List<String> codecs(String preference, String key, List<String> fallback) {
+    String value = preference(preference, key, String.join(",", fallback));
     List<String> result = Arrays.stream(value.split(",")).map(MediaSourceService::codecName).filter(s -> !s.isBlank()).toList();
     return result.isEmpty() ? fallback : result;
+  }
+  private String preference(String value, String legacyKey, String fallback) {
+    return value == null || value.isBlank() ? setting(legacyKey, fallback) : value;
+  }
+  private static String sourceKey(String video, String policy, boolean userSpecific) {
+    if (!userSpecific) return video;
+    try {
+      byte[] digest = MessageDigest.getInstance("SHA-256").digest(policy.getBytes(StandardCharsets.UTF_8));
+      return video + "|" + java.util.HexFormat.of().formatHex(digest);
+    } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
   }
   private Set<String> allowed(String key) {
     String value = setting(key, "");

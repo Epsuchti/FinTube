@@ -2,7 +2,7 @@ import {ChangeDetectionStrategy, Component, OnInit, inject, signal} from '@angul
 import {CommonModule} from '@angular/common';
 import {HttpErrorResponse} from '@angular/common/http';
 import {FormsModule} from '@angular/forms';
-import {AccountService, Profile} from '../../api';
+import {AccountService, MediaPreferences, MediaPreferencesQualityEnum, Profile} from '../../api';
 
 @Component({
     selector: 'ft-account-page',
@@ -25,10 +25,33 @@ export class AccountPageComponent implements OnInit {
     newPassword = '';
     confirmation = '';
     youtubeApiKey = '';
+    mediaQuality = MediaPreferencesQualityEnum._1080;
+    preferredVideoCodecs = 'h264,vp9,av1';
+    preferredAudioCodecs = 'aac,opus';
 
     ngOnInit(): void {
         this.loadProfile();
         this.loadYouTubeApiKeyStatus();
+        this.loadMediaPreferences();
+    }
+
+    saveMediaPreferences(): void {
+        this.error.set(''); this.notice.set(''); this.saving.set(true);
+        const preferences: MediaPreferences = {
+            quality: this.mediaQuality,
+            preferred_video_codecs: this.preferredVideoCodecs,
+            preferred_audio_codecs: this.preferredAudioCodecs
+        };
+        this.accountApi.updateMediaPreferences({mediaPreferences: preferences}).subscribe({
+            next: updated => {
+                this.saving.set(false);
+                this.mediaQuality = updated.quality;
+                this.preferredVideoCodecs = updated.preferred_video_codecs;
+                this.preferredAudioCodecs = updated.preferred_audio_codecs;
+                this.notice.set('Media preferences saved. They apply to new playback sessions.');
+            },
+            error: (error: unknown) => { this.saving.set(false); this.error.set(this.messageFor(error, 'Could not save media preferences.')); }
+        });
     }
 
     saveYouTubeApiKey(): void {
@@ -147,6 +170,17 @@ export class AccountPageComponent implements OnInit {
         this.accountApi.getYouTubeApiKeyStatus().subscribe({
             next: status => this.youtubeApiKeyConfigured.set(status.configured),
             error: (error: unknown) => this.error.set(this.messageFor(error, 'Could not load your YouTube API key status.'))
+        });
+    }
+
+    private loadMediaPreferences(): void {
+        this.accountApi.getMediaPreferences().subscribe({
+            next: preferences => {
+                this.mediaQuality = preferences.quality;
+                this.preferredVideoCodecs = preferences.preferred_video_codecs;
+                this.preferredAudioCodecs = preferences.preferred_audio_codecs;
+            },
+            error: (error: unknown) => this.error.set(this.messageFor(error, 'Could not load media preferences.'))
         });
     }
 

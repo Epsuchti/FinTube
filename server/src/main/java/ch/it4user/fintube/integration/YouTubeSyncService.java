@@ -4,6 +4,7 @@ import ch.it4user.fintube.core.ApplicationPaths;
 import ch.it4user.fintube.core.ApplicationClock;
 import ch.it4user.fintube.core.SettingsService;
 import ch.it4user.fintube.media.BackgroundFillService;
+import ch.it4user.fintube.media.MaterializedVideoDownloadService;
 import ch.it4user.fintube.media.ProxiedHttpClient;
 import ch.it4user.fintube.persistence.entities.UserEntity;
 import ch.it4user.fintube.persistence.repositories.UserRepository;
@@ -78,6 +79,7 @@ public class YouTubeSyncService {
   final ApplicationPaths paths;
   final JellyfinSyncService jellyfin;
   final BackgroundFillService filler;
+  final MaterializedVideoDownloadService materializedDownloads;
   final UserYouTubeApiKeyService youtubeApiKeys;
   final ObjectMapper json = new ObjectMapper();
   final ProxiedHttpClient externalHttp;
@@ -90,7 +92,7 @@ public class YouTubeSyncService {
                             UserRepository users,
                             ApplicationPaths paths, JellyfinSyncService jellyfin,
                             BackgroundFillService filler, UserYouTubeApiKeyService youtubeApiKeys,
-                            ProxiedHttpClient externalHttp) {
+                            ProxiedHttpClient externalHttp, MaterializedVideoDownloadService materializedDownloads) {
     this.settings = settings;
     this.channels = channels;
     this.subscriptions = subscriptions;
@@ -102,6 +104,7 @@ public class YouTubeSyncService {
     this.paths = paths;
     this.jellyfin = jellyfin;
     this.filler = filler;
+    this.materializedDownloads = materializedDownloads;
     this.youtubeApiKeys = youtubeApiKeys;
     this.externalHttp = externalHttp;
   }
@@ -301,7 +304,7 @@ public class YouTubeSyncService {
     }
   }
 
-  /** Enqueue globally shared, low-priority cache fills for a channel's latest X videos. */
+  /** Materialize configured channel downloads in every subscriber's private Jellyfin library. */
   private void prefetchNewest(String channel) {
     YouTubeChannelEntity channelEntity = channels.findById(channel).orElse(null);
     if (channelEntity == null) return;
@@ -313,15 +316,20 @@ public class YouTubeSyncService {
       List<VideoEntity> videosToPrefetch = prefetchCategory(channel, videoLimit, 0, 0);
       List<VideoEntity> shortsToPrefetch = prefetchCategory(channel, shortLimit, 1, 0);
       List<VideoEntity> liveStreamsToPrefetch = prefetchCategory(channel, liveStreamLimit, 0, 1);
-      LOG.info("event=YOUTUBE_PREFETCH_REQUESTED channel={} videoLimit={} shortLimit={} liveStreamLimit={} videos={} shorts={} liveStreams={}",
+      LOG.info("event=YOUTUBE_MEDIA_DOWNLOAD_REQUESTED channel={} videoLimit={} shortLimit={} liveStreamLimit={} videos={} shorts={} liveStreams={}",
           channel, videoLimit, shortLimit, liveStreamLimit, videosToPrefetch.size(), shortsToPrefetch.size(), liveStreamsToPrefetch.size());
-      videosToPrefetch.forEach(video -> filler.enqueue(video.getVideoId(), "youtube_prefetch_video"));
-      shortsToPrefetch.forEach(video -> filler.enqueue(video.getVideoId(), "youtube_prefetch_short"));
-      liveStreamsToPrefetch.forEach(video -> filler.enqueue(video.getVideoId(), "youtube_prefetch_live_stream"));
+      videosToPrefetch.forEach(video -> materializeForSubscribers(channel, video.getVideoId()));
+      shortsToPrefetch.forEach(video -> materializeForSubscribers(channel, video.getVideoId()));
+      liveStreamsToPrefetch.forEach(video -> materializeForSubscribers(channel, video.getVideoId()));
     } catch (Exception ignored) {
       // Prefetch must never fail metadata synchronization or interactive playback.
-      LOG.warn("event=YOUTUBE_PREFETCH_FAILED channel={} reason={}", channel, ignored.toString(), ignored);
+      LOG.warn("event=YOUTUBE_MEDIA_DOWNLOAD_REQUEST_FAILED channel={} reason={}", channel, ignored.toString(), ignored);
     }
+  }
+
+  private void materializeForSubscribers(String channel, String videoId) {
+    subscriptions.findByChannelIdAndEnabled(channel, 1)
+        .forEach(subscription -> materializedDownloads.enqueue(subscription.getUserId(), videoId));
   }
 
   private List<VideoEntity> prefetchCategory(String channel, int limit, int isShort, int isLiveStream) {

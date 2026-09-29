@@ -6,6 +6,7 @@ import ch.it4user.fintube.media.MediaSourceService;
 import ch.it4user.fintube.media.SponsorRenditionService;
 import ch.it4user.fintube.integration.JellyfinSyncService;
 import ch.it4user.fintube.core.SettingsService;
+import ch.it4user.fintube.api.contract.model.MediaPreferences;
 import ch.it4user.fintube.persistence.entities.UserVideoEntity;
 import ch.it4user.fintube.persistence.repositories.UserVideoRepository;
 import jakarta.servlet.http.HttpServletRequest;
@@ -35,9 +36,11 @@ public class PlaybackService {
     private final SponsorBlockService sponsorBlock;
     private final SponsorRenditionService renditions;
     private final JellyfinSyncService jellyfin;
+    private final UserMediaPreferencesService mediaPreferences;
     private final java.util.concurrent.ConcurrentHashMap<String, String> reportedVersions = new java.util.concurrent.ConcurrentHashMap<>();
 
-    public PlaybackService(UserVideoRepository userVideos, AuthService auth, MediaSourceService sources, FragmentManager fragments, BackgroundFillService filler, SettingsService settings, SponsorBlockService sponsorBlock, SponsorRenditionService renditions, JellyfinSyncService jellyfin) {
+    @org.springframework.beans.factory.annotation.Autowired
+    public PlaybackService(UserVideoRepository userVideos, AuthService auth, MediaSourceService sources, FragmentManager fragments, BackgroundFillService filler, SettingsService settings, SponsorBlockService sponsorBlock, SponsorRenditionService renditions, JellyfinSyncService jellyfin, UserMediaPreferencesService mediaPreferences) {
         this.userVideos = userVideos;
         this.auth = auth;
         this.sources = sources;
@@ -47,6 +50,12 @@ public class PlaybackService {
         this.sponsorBlock = sponsorBlock;
         this.renditions = renditions;
         this.jellyfin = jellyfin;
+        this.mediaPreferences = mediaPreferences;
+    }
+
+    /** Compatibility constructor for focused tests and legacy embedding. */
+    public PlaybackService(UserVideoRepository userVideos, AuthService auth, MediaSourceService sources, FragmentManager fragments, BackgroundFillService filler, SettingsService settings, SponsorBlockService sponsorBlock, SponsorRenditionService renditions, JellyfinSyncService jellyfin) {
+        this(userVideos, auth, sources, fragments, filler, settings, sponsorBlock, renditions, jellyfin, null);
     }
 
     public String manifest(String video, String token) {
@@ -57,7 +66,7 @@ public class PlaybackService {
         try {
             String resolvedToken = resolveToken(video, token, request);
             valid(video, resolvedToken);
-            var source = sources.source(video);
+            var source = source(video, preferences(video, resolvedToken));
             if (source.fmp4()) {
                 reportRuntime(video, resolvedToken, "fmp4:" + source.format(), source.duration());
                 LOG.info("event=PLAYBACK_FMP4_SELECTED video={} format={} height={}", video, source.format(), source.height());
@@ -107,7 +116,7 @@ public class PlaybackService {
     public String fmp4TrackManifest(String video, String format, String track, String token) {
         valid(video, token);
         try {
-            var source = sources.source(video);
+            var source = source(video, preferences(video, token));
             if (!source.fmp4() || !fmp4Key(source.format()).equals(format)
                     || !("video".equals(track) || "audio".equals(track)))
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND);
@@ -128,11 +137,12 @@ public class PlaybackService {
     public Fragment fmp4TrackFragment(String video, String format, String track, Integer index, String token) {
         valid(video, token);
         try {
-            var source = sources.source(video);
+            MediaPreferences preferences = preferences(video, token);
+            var source = source(video, preferences);
             try {
                 return openFmp4TrackFragment(video, format, track, index, source);
             } catch (FragmentManager.ExpiredSourceException expired) {
-                var refreshed = sources.refresh(video, "fmp4_fragment_source_expired");
+                var refreshed = sources.refresh(video, preferences, "fmp4_fragment_source_expired");
                 if (!format.equals(fmp4Key(refreshed.format())) || refreshed.fragments().size() != source.fragments().size())
                     throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "fMP4 source changed during playback", expired);
                 return openFmp4TrackFragment(video, format, track, index, refreshed);
@@ -227,7 +237,8 @@ public class PlaybackService {
         try {
             String resolvedToken = resolveToken(video, token, request);
             valid(video, resolvedToken);
-            var source = sources.source(video);
+            MediaPreferences preferences = preferences(video, resolvedToken);
+            var source = source(video, preferences);
             String resolvedFragmentId = fragmentId(fragmentId);
             var sourceFragment = source.fragments().stream().filter(item -> item.id().equals(resolvedFragmentId)).findFirst()
                     .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
@@ -239,7 +250,7 @@ public class PlaybackService {
             } catch (FragmentManager.ExpiredSourceException e) {
                 LOG.warn("event=PLAYBACK_SOURCE_REFRESH_REQUIRED video={} fragment={} reason=upstream_source_expired",
                     video, resolvedFragmentId);
-                source = sources.refresh(video, "playback_fragment_source_expired");
+                source = sources.refresh(video, preferences, "playback_fragment_source_expired");
                 var refreshed = source.fragments().stream().filter(item -> item.id().equals(resolvedFragmentId)).findFirst()
                         .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_GATEWAY));
                 path = fragments.get(video, source.format(), resolvedFragmentId, refreshed.url(), refreshed.audioUrl(), refreshed.startSeconds(), true);
@@ -271,6 +282,18 @@ public class PlaybackService {
         if (!userVideos.existsByIdVideoIdAndPlaybackToken(video, token)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         }
+    }
+
+    private MediaPreferences preferences(String video, String token) {
+        if (mediaPreferences == null) return null;
+        UserVideoEntity userVideo = userVideos.findByIdVideoIdIn(java.util.List.of(video)).stream()
+                .filter(value -> token.equals(value.getPlaybackToken())).findFirst()
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        return mediaPreferences.get(userVideo.getId().getUserId());
+    }
+
+    private MediaSourceService.Source source(String video, MediaPreferences preferences) throws Exception {
+        return preferences == null ? sources.source(video) : sources.source(video, preferences);
     }
 
     private boolean backgroundFillOnPlayback() {

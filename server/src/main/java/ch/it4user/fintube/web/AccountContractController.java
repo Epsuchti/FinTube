@@ -8,6 +8,7 @@ import ch.it4user.fintube.api.contract.model.Profile;
 import ch.it4user.fintube.api.contract.model.Role;
 import ch.it4user.fintube.api.contract.model.UpdateYouTubeApiKeyRequest;
 import ch.it4user.fintube.api.contract.model.YouTubeApiKeyStatus;
+import ch.it4user.fintube.api.contract.model.MediaPreferences;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -50,5 +51,15 @@ public class AccountContractController implements AccountApi {
     public ResponseEntity<Void> uploadYouTubeWatchCookie(MultipartFile file) {
         account.uploadYouTubeWatchCookie(requestContext, file);
         return ResponseEntity.ok().build();
+    }
+
+    @Override
+    public ResponseEntity<MediaPreferences> getMediaPreferences() {
+        return ResponseEntity.ok(account.mediaPreferences(requestContext));
+    }
+
+    @Override
+    public ResponseEntity<MediaPreferences> updateMediaPreferences(MediaPreferences request) {
+        return ResponseEntity.ok(account.updateMediaPreferences(requestContext, request));
     }
 }

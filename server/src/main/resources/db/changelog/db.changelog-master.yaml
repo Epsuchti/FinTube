@@ -45,3 +45,5 @@ databaseChangeLog:
       file: db/changelog/023-playlist-subscriptions.yaml
   - include:
       file: db/changelog/024-playback-defaults.yaml
+  - include:
+      file: db/changelog/025-user-media-preferences.yaml

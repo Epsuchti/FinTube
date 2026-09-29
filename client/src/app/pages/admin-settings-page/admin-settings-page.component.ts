@@ -29,14 +29,11 @@ export class AdminSettingsPageComponent implements OnInit {
     ];
 
     readonly settingLabels: Record<string, string> = {
-        stream_quality: 'Stream quality',
         background_fill_on_playback: 'Complete videos during playback',
         sponsorblock_enabled: 'Skip SponsorBlock sponsor segments',
         sponsorblock_api_url: 'SponsorBlock API URL',
         allowed_video_codecs: 'Allowed video codecs',
-        preferred_video_codecs: 'Preferred video codecs',
         allowed_audio_codecs: 'Allowed audio codecs',
-        preferred_audio_codecs: 'Preferred audio codecs',
         public_base_url: 'Public base URL',
         cache_retention_days: 'Cache retention (days)',
         cache_min_free_gb: 'Minimum free cache space (GB)',
@@ -74,7 +71,7 @@ export class AdminSettingsPageComponent implements OnInit {
     readonly settingGroups: SettingGroup[] = [
         {
             title: 'Playback',
-            keys: ['stream_quality', 'background_fill_on_playback', 'sponsorblock_enabled', 'sponsorblock_api_url', 'allowed_video_codecs', 'preferred_video_codecs', 'allowed_audio_codecs', 'preferred_audio_codecs', 'public_base_url']
+            keys: ['background_fill_on_playback', 'sponsorblock_enabled', 'sponsorblock_api_url', 'allowed_video_codecs', 'allowed_audio_codecs', 'public_base_url']
         },
         {
             title: 'Cache',
@@ -112,7 +109,6 @@ export class AdminSettingsPageComponent implements OnInit {
     }
 
     helpFor(key: string): string {
-        if (key === 'stream_quality') return 'Maximum video height for the shared YouTube source (1080p by default). Choose up to 2160p when your Jellyfin clients support the source codec.';
         if (key === 'cache_min_free_gb') return 'The cache evicts the oldest inactive fragments when the filesystem drops below this free-space reserve.';
         if (key === 'background_download_max_mbps') return 'Maximum rate for low-priority prefetch jobs. Playback traffic is not limited by this setting.';
         if (key === 'background_fill_on_playback') return 'When enabled, starting playback also downloads the remaining fragments. When disabled, only requested playback fragments are downloaded.';
@@ -125,10 +121,6 @@ export class AdminSettingsPageComponent implements OnInit {
         if (key === 'youtube_mark_watched') return 'Uses yt-dlp and the separate watched-state cookie file to update the selected YouTube account. Failures are retried on later syncs.';
         if (key === 'cookie_file') return 'Optional Netscape cookies.txt used only while fetching YouTube media.';
         return this.secretSettings.has(key) ? 'Secret · stored server-side and never shown to normal users' : 'Administrator-controlled global value';
-    }
-
-    isStreamQuality(key: string): boolean {
-        return key === 'stream_quality';
     }
 
     isBoolean(key: string): boolean {

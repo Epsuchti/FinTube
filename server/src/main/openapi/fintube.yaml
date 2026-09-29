@@ -35,6 +35,9 @@ paths:
               properties:
                 file: { type: string, format: binary }
       responses: { '200': { description: Uploaded }, '400': { description: Invalid cookie file }, '401': { description: Unauthenticated } }
+  /me/media-preferences:
+    get: { tags: [ Account ], operationId: getMediaPreferences, responses: { '200': { description: Media preferences, content: { application/json: { schema: { $ref: '#/components/schemas/MediaPreferences' } } } }, '401': { description: Unauthenticated } } }
+    put: { tags: [ Account ], operationId: updateMediaPreferences, requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/MediaPreferences' } } } }, responses: { '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/MediaPreferences' } } } }, '400': { description: Invalid preferences }, '401': { description: Unauthenticated } } }
   /subscriptions:
     get: { tags: [ Library ], operationId: listSubscriptions, responses: { '200': { description: Subscriptions, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Subscription' } } } } } } }
     post: { tags: [ Library ], operationId: addSubscription, requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AddSubscriptionRequest' } } } }, responses: { '200': { description: Added } } }
@@ -109,6 +112,7 @@ components:
     Profile: { type: object, required: [ id, username, role, filesystemSlug ], properties: { id: { type: integer, format: int64 }, username: { type: string }, role: { $ref: '#/components/schemas/Role' }, filesystemSlug: { type: string } } }
     YouTubeApiKeyStatus: { type: object, required: [ configured ], properties: { configured: { type: boolean } } }
     UpdateYouTubeApiKeyRequest: { type: object, required: [ api_key ], properties: { api_key: { type: string, maxLength: 4096 } } }
+    MediaPreferences: { type: object, required: [ quality, preferred_video_codecs, preferred_audio_codecs ], properties: { quality: { type: string, enum: [ '480', '720', '1080', '1440', '2160', best, best-compatible ] }, preferred_video_codecs: { type: string, minLength: 1, maxLength: 200 }, preferred_audio_codecs: { type: string, minLength: 1, maxLength: 200 } } }
     AddSubscriptionRequest: { type: object, required: [ channel ], properties: { channel: { type: string } } }
     AddPlaylistSubscriptionRequest: { type: object, required: [ playlist ], properties: { playlist: { type: string } } }
     ImportCookiesRequest: { type: object, required: [ cookies ], properties: { cookies: { type: string, minLength: 1, maxLength: 5000000 } } }

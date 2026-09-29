@@ -28,6 +28,12 @@ public class UserEntity {
     @Lob
     @Column(name = "youtube_watch_cookie_path")
     private String youtubeWatchCookiePath;
+    @Column(name = "media_quality", nullable = false, length = 16)
+    private String mediaQuality = "1080";
+    @Column(name = "preferred_video_codecs", nullable = false, length = 200)
+    private String preferredVideoCodecs = "h264,vp9,av1";
+    @Column(name = "preferred_audio_codecs", nullable = false, length = 200)
+    private String preferredAudioCodecs = "aac,opus";
 
     protected UserEntity() {
     }
@@ -76,6 +82,13 @@ public class UserEntity {
 
     public String getYoutubeWatchCookiePath() { return youtubeWatchCookiePath; }
     public void setYoutubeWatchCookiePath(String value) { youtubeWatchCookiePath = value; }
+
+    public String getMediaQuality() { return mediaQuality; }
+    public void setMediaQuality(String value) { mediaQuality = value; }
+    public String getPreferredVideoCodecs() { return preferredVideoCodecs; }
+    public void setPreferredVideoCodecs(String value) { preferredVideoCodecs = value; }
+    public String getPreferredAudioCodecs() { return preferredAudioCodecs; }
+    public void setPreferredAudioCodecs(String value) { preferredAudioCodecs = value; }
 
     public void setPasswordHash(String value) {
         passwordHash = value;
