@@ -51,7 +51,8 @@ export class AdminSettingsPageComponent implements OnInit {
         jellyfin_auto_refresh: 'Jellyfin automatic refresh',
         jellyfin_runtime_sync: 'Jellyfin runtime sync',
         jellyfin_remove_watched: 'Remove watched videos during sync',
-        jellyfin_watched_user: 'Jellyfin user (name or ID)',
+        jellyfin_download_favorites: 'Download Jellyfin favorites during sync',
+        jellyfin_watched_user: 'Jellyfin user for watched/favorite sync (name or ID)',
         youtube_mark_watched: 'Mark removed videos watched on YouTube',
         jellyfin_request_timeout_seconds: 'Jellyfin request timeout (seconds)',
         yt_dlp_path: 'yt-dlp path',
@@ -83,7 +84,7 @@ export class AdminSettingsPageComponent implements OnInit {
         },
         {
             title: 'Jellyfin',
-            keys: ['jellyfin_enabled', 'jellyfin_url', 'jellyfin_api_key', 'jellyfin_auto_refresh', 'jellyfin_runtime_sync', 'jellyfin_remove_watched', 'jellyfin_watched_user', 'jellyfin_request_timeout_seconds']
+            keys: ['jellyfin_enabled', 'jellyfin_url', 'jellyfin_api_key', 'jellyfin_auto_refresh', 'jellyfin_runtime_sync', 'jellyfin_remove_watched', 'jellyfin_download_favorites', 'jellyfin_watched_user', 'jellyfin_request_timeout_seconds']
         },
         {
             title: 'Network and yt-dlp',
@@ -117,6 +118,8 @@ export class AdminSettingsPageComponent implements OnInit {
         if (key === 'youtube_po_token_provider_enabled') return 'Leave enabled. The provider address is configured by the deployment, not here.';
         if (key === 'youtube_po_token') return 'Usually leave blank. Use only a manually generated CLIENT.CONTEXT+TOKEN value when the automatic provider is unavailable.';
         if (key === 'jellyfin_remove_watched') return 'On each normal sync, remove library files that this Jellyfin user has marked played. A persistent record prevents them from being imported again.';
+        if (key === 'jellyfin_download_favorites') return 'On each normal sync, download full local media files for videos favorited by the configured Jellyfin user.';
+        if (key === 'jellyfin_watched_user') return 'The Jellyfin account whose watched and favorite states FinTube reconciles.';
         if (key === 'jellyfin_watched_user') return 'Exact Jellyfin username or user ID whose played state should be reconciled.';
         if (key === 'youtube_mark_watched') return 'Uses yt-dlp and the separate watched-state cookie file to update the selected YouTube account. Failures are retried on later syncs.';
         if (key === 'cookie_file') return 'Optional Netscape cookies.txt used only while fetching YouTube media.';
@@ -124,7 +127,7 @@ export class AdminSettingsPageComponent implements OnInit {
     }
 
     isBoolean(key: string): boolean {
-        return key === 'background_fill_on_playback' || key === 'sponsorblock_enabled' || key === 'youtube_po_token_provider_enabled' || key === 'youtube_mark_watched' || key === 'jellyfin_enabled' || key === 'jellyfin_auto_refresh' || key === 'jellyfin_runtime_sync' || key === 'jellyfin_remove_watched';
+        return key === 'background_fill_on_playback' || key === 'sponsorblock_enabled' || key === 'youtube_po_token_provider_enabled' || key === 'youtube_mark_watched' || key === 'jellyfin_enabled' || key === 'jellyfin_auto_refresh' || key === 'jellyfin_runtime_sync' || key === 'jellyfin_remove_watched' || key === 'jellyfin_download_favorites';
     }
 
     setSetting(key: string, value: string): void {

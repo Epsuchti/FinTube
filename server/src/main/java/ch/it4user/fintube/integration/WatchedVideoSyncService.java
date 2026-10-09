@@ -4,6 +4,7 @@ import ch.it4user.fintube.core.ApplicationClock;
 import ch.it4user.fintube.core.ApplicationPaths;
 import ch.it4user.fintube.core.SettingsService;
 import ch.it4user.fintube.media.ProxiedHttpClient;
+import ch.it4user.fintube.media.MaterializedVideoDownloadService;
 import ch.it4user.fintube.persistence.entities.UserEntity;
 import ch.it4user.fintube.persistence.entities.UserVideoEntity;
 import ch.it4user.fintube.persistence.entities.VideoEntity;
@@ -51,13 +52,15 @@ public class WatchedVideoSyncService {
   private final YouTubeChannelRepository channels;
   private final ProxiedHttpClient externalHttp;
   private final UserYouTubeApiKeyService youtubeApiKeys;
+  private final MaterializedVideoDownloadService materializedDownloads;
 
   public WatchedVideoSyncService(SettingsService settings, ApplicationPaths paths,
                                  JellyfinClient jellyfinClient, JellyfinSyncService jellyfinSync,
                                  UserVideoRepository userVideos, WatchedVideoRepository watchedVideos,
                                  UserRepository users, VideoRepository videos,
                                  YouTubeChannelRepository channels, ProxiedHttpClient externalHttp,
-                                 UserYouTubeApiKeyService youtubeApiKeys) {
+                                 UserYouTubeApiKeyService youtubeApiKeys,
+                                 MaterializedVideoDownloadService materializedDownloads) {
     this.settings = settings;
     this.paths = paths;
     this.jellyfinClient = jellyfinClient;
@@ -69,13 +72,33 @@ public class WatchedVideoSyncService {
     this.channels = channels;
     this.externalHttp = externalHttp;
     this.youtubeApiKeys = youtubeApiKeys;
+    this.materializedDownloads = materializedDownloads;
   }
 
   /** Failures are deliberately isolated so watch-history outages never block ingestion. */
   public synchronized void reconcile() {
     Map<String, String> current = settings.values(false);
     if (enabled(current, "jellyfin_remove_watched")) removePlayedJellyfinItems(current);
+    if (enabled(current, "jellyfin_download_favorites")) downloadFavoriteJellyfinItems(current);
     if (enabled(current, "youtube_mark_watched")) markPendingOnYouTube(current);
+  }
+
+  private void downloadFavoriteJellyfinItems(Map<String, String> current) {
+    JellyfinClient.FavoriteItems favorites = jellyfinClient.favoriteItems(current.get("jellyfin_watched_user"));
+    if (!favorites.success()) {
+      LOG.warn("event=JELLYFIN_FAVORITES_RECONCILE_SKIPPED reason={}", favorites.message());
+      return;
+    }
+    List<UserVideoEntity> links = new ArrayList<>(userVideos.findAll());
+    Map<Long, Path> roots = userRoots();
+    int queued = 0;
+    for (JellyfinClient.FavoriteItem item : favorites.items()) {
+      UserVideoEntity link = matchingLink(item.videoId(), item.path(), links, roots);
+      if (link == null) continue;
+      materializedDownloads.enqueue(link.getId().getUserId(), link.getId().getVideoId());
+      queued++;
+    }
+    if (queued > 0) LOG.info("event=JELLYFIN_FAVORITES_DOWNLOAD_QUEUED videos={}", queued);
   }
 
   private void removePlayedJellyfinItems(Map<String, String> current) {
@@ -213,17 +236,22 @@ public class WatchedVideoSyncService {
 
   static UserVideoEntity matchingLink(JellyfinClient.PlayedItem item, List<UserVideoEntity> links,
                                       Map<Long, Path> roots) {
+    return matchingLink(item.videoId(), item.path(), links, roots);
+  }
+
+  static UserVideoEntity matchingLink(String videoId, String jellyfinPath, List<UserVideoEntity> links,
+                                      Map<Long, Path> roots) {
     List<UserVideoEntity> candidates = links.stream()
-        .filter(link -> item.videoId().isBlank() || item.videoId().equals(link.getId().getVideoId()))
+        .filter(link -> videoId == null || videoId.isBlank() || videoId.equals(link.getId().getVideoId()))
         .toList();
     for (UserVideoEntity link : candidates) {
       Path root = roots.get(link.getId().getUserId());
       Path library = safeLibraryPath(link, root);
-      if (library != null && pathMatches(item.path(), library, root)) return link;
+      if (library != null && pathMatches(jellyfinPath, library, root)) return link;
     }
     // Provider ids are unambiguous in the common single-user setup. Avoid
     // deleting multiple users' copies when the same video is linked more than once.
-    return !item.videoId().isBlank() && candidates.size() == 1 ? candidates.getFirst() : null;
+    return videoId != null && !videoId.isBlank() && candidates.size() == 1 ? candidates.getFirst() : null;
   }
 
   static boolean pathMatches(String jellyfinPath, Path libraryPath, Path userRoot) {

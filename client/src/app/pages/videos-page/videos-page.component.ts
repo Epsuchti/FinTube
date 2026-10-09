@@ -57,7 +57,7 @@ export class VideosPageComponent implements OnInit {
     }
 
     downloaded(video: Video): boolean {
-        return video.downloaded === true || video.cache_status === 'COMPLETE';
+        return video.downloaded === true;
     }
 
     formatBytes(bytes?: number): string {

@@ -24,7 +24,7 @@ public final class SettingsPolicy {
             "subscription_sync_minutes", "public_base_url", "preferred_video_codecs",
             "preferred_audio_codecs", "jellyfin_url", "jellyfin_api_key",
             "jellyfin_enabled", "jellyfin_auto_refresh", "jellyfin_runtime_sync", "jellyfin_request_timeout_seconds",
-            "jellyfin_remove_watched", "jellyfin_watched_user", "youtube_mark_watched",
+            "jellyfin_remove_watched", "jellyfin_download_favorites", "jellyfin_watched_user", "youtube_mark_watched",
             "yt_dlp_path", "ffmpeg_path", "proxy_url", "proxy_username", "proxy_password", "cookie_file", "youtube_watch_cookie_file", "youtube_po_token", "youtube_po_token_provider_args", "youtube_po_token_provider_enabled", "youtube_player_client",
             "sponsorblock_enabled", "sponsorblock_api_url",
             "allowed_video_codecs", "allowed_audio_codecs");
@@ -49,7 +49,7 @@ public final class SettingsPolicy {
                 case "newest_videos_to_download" -> integerInRange(key, value, 0, 1000);
                 case "initial_channel_import_count", "initial_short_import_count", "initial_live_stream_import_count" -> integerInRange(key, value, 0, 1000);
                 case "subscription_sync_minutes" -> integerInRange(key, value, 1, 10080);
-                case "background_fill_on_playback", "jellyfin_enabled", "jellyfin_auto_refresh", "jellyfin_runtime_sync", "jellyfin_remove_watched", "youtube_mark_watched", "youtube_po_token_provider_enabled", "sponsorblock_enabled" -> require("true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value), key + " must be true or false");
+                case "background_fill_on_playback", "jellyfin_enabled", "jellyfin_auto_refresh", "jellyfin_runtime_sync", "jellyfin_remove_watched", "jellyfin_download_favorites", "youtube_mark_watched", "youtube_po_token_provider_enabled", "sponsorblock_enabled" -> require("true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value), key + " must be true or false");
                 case "jellyfin_request_timeout_seconds" -> integerInRange(key, value, 1, 120);
                 case "public_base_url", "jellyfin_url", "sponsorblock_api_url" -> url(key, value, Set.of("http", "https"));
                 case "proxy_url" -> url(key, value, Set.of("http", "https", "socks5"));

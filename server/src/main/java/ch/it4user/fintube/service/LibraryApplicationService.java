@@ -606,7 +606,17 @@ public class LibraryApplicationService {
                 .cacheExpiresAt(expires)
                 .cacheBytes(value.getCacheBytes())
                 .cachedFragments(value.getCachedFragments())
-                .downloaded(booleanValue(value.getDownloaded()));
+                .downloaded(hasMaterializedMedia(value.getLibraryPath()));
+    }
+
+    private static boolean hasMaterializedMedia(String libraryPath) {
+        if (libraryPath == null || libraryPath.isBlank()) return false;
+        try (var files = Files.list(Path.of(libraryPath))) {
+            return files.anyMatch(path -> Files.isRegularFile(path)
+                    && path.getFileName().toString().matches("video\\.(mp4|mkv|webm|m4v|mov)"));
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private Channel resolve(long userId, String raw) throws Exception {

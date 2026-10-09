@@ -153,6 +153,7 @@ button:hover:not(:disabled), .button:hover { border-color: #46617f; background: 
 .video-identity { display: flex; min-width: 300px; align-items: center; gap: 13px; }
 .video-identity strong { display: block; max-width: 310px; color: #eef4fc; line-height: 1.35; }
 .video-thumbnail { position: relative; display: grid; width: 104px; height: 60px; flex: none; place-items: center; overflow: hidden; border-radius: 8px; color: #ff8292; background: linear-gradient(135deg, #55253f, #172c48); }
+.video-thumbnail-downloaded { box-sizing: border-box; border: 3px solid #35c46a; }
 .thumbnail-placeholder { color: #8297b2; font-size: .72rem; }
 .video-thumbnail img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .video-channel { min-width: 150px; max-width: 220px; color: #d4dfed; }

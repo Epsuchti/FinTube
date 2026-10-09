@@ -47,3 +47,5 @@ databaseChangeLog:
       file: db/changelog/024-playback-defaults.yaml
   - include:
       file: db/changelog/025-user-media-preferences.yaml
+  - include:
+      file: db/changelog/026-jellyfin-favorite-downloads.yaml

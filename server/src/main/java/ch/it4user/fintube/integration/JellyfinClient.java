@@ -65,6 +65,10 @@ public class JellyfinClient {
 
   public record PlayedItems(boolean success, List<PlayedItem> items, String message) {}
 
+  public record FavoriteItem(String id, String path, String videoId) {}
+
+  public record FavoriteItems(boolean success, List<FavoriteItem> items, String message) {}
+
   /** Outcome of applying a folder preference for every Jellyfin user who can see it. */
   public record SortingResult(boolean itemFound, int users, int changed, int failed, String message) {}
 
@@ -181,6 +185,46 @@ public class JellyfinClient {
       return new PlayedItems(true, List.copyOf(result), "ok");
     } catch (Exception e) {
       return new PlayedItems(false, List.of(), "Jellyfin is unreachable");
+    }
+  }
+
+  /** Return movies marked as favorites for one configured Jellyfin user. */
+  public FavoriteItems favoriteItems(String configuredUser) {
+    Configuration c = configuration();
+    if (!c.enabled()) return new FavoriteItems(false, List.of(), "Jellyfin integration is disabled");
+    if (!c.configured()) return new FavoriteItems(false, List.of(), "Jellyfin URL is not configured");
+    if (configuredUser == null || configuredUser.isBlank()) {
+      return new FavoriteItems(false, List.of(), "Jellyfin user is not configured");
+    }
+    try {
+      String userId = resolveUserId(c, configuredUser.trim());
+      if (userId.isBlank()) return new FavoriteItems(false, List.of(), "Jellyfin user was not found");
+      List<FavoriteItem> result = new ArrayList<>();
+      int start = 0;
+      int pageSize = 200;
+      while (true) {
+        String query = "/Users/" + encPath(userId)
+            + "/Items?Recursive=true&Filters=IsFavorite&IncludeItemTypes=Movie"
+            + "&Fields=Path,ProviderIds&StartIndex=" + start + "&Limit=" + pageSize;
+        HttpResponse<String> r = request(c, "GET", query, "");
+        if (r.statusCode() / 100 != 2) {
+          return new FavoriteItems(false, List.of(), operationFailureMessage(r.statusCode()));
+        }
+        JsonNode root = json.readTree(r.body());
+        JsonNode items = root.path("Items");
+        if (!items.isArray()) break;
+        for (JsonNode item : items) {
+          result.add(new FavoriteItem(item.path("Id").asText(""), item.path("Path").asText(""),
+              providerId(item.path("ProviderIds"))));
+        }
+        int returned = items.size();
+        start += returned;
+        int total = root.path("TotalRecordCount").asInt(start);
+        if (returned == 0 || start >= total) break;
+      }
+      return new FavoriteItems(true, List.copyOf(result), "ok");
+    } catch (Exception e) {
+      return new FavoriteItems(false, List.of(), "Jellyfin is unreachable");
     }
   }
 

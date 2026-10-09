@@ -73,6 +73,34 @@ class JellyfinClientTest {
   }
 
   @Test
+  void readsFavoriteMoviesForConfiguredJellyfinUser() throws Exception {
+    server = HttpServer.create(new InetSocketAddress(0), 0);
+    server.createContext("/", exchange -> {
+      String path = exchange.getRequestURI().getPath();
+      if (path.equals("/Users")) respond(exchange, "[{\"Id\":\"user-1\",\"Name\":\"Eric\"}]");
+      else if (path.equals("/Users/user-1/Items")) {
+        assertThat(exchange.getRequestURI().getQuery()).contains("Filters=IsFavorite");
+        respond(exchange, "{\"Items\":[{\"Id\":\"item-1\",\"Path\":\"/library/video.mp4\",\"ProviderIds\":{\"YouTube\":\"VIDEO123\"}}],\"TotalRecordCount\":1}");
+      } else respond(exchange, null);
+    });
+    server.start();
+    SettingsService settings = mock(SettingsService.class);
+    when(settings.values(false)).thenReturn(Map.of(
+        "jellyfin_enabled", "true",
+        "jellyfin_url", "http://localhost:" + server.getAddress().getPort(),
+        "jellyfin_api_key", "secret"));
+    JellyfinClient client = new JellyfinClient(settings, json, HttpClient.newHttpClient());
+
+    JellyfinClient.FavoriteItems favorites = client.favoriteItems("Eric");
+
+    assertThat(favorites.success()).isTrue();
+    assertThat(favorites.items()).singleElement().satisfies(item -> {
+      assertThat(item.path()).isEqualTo("/library/video.mp4");
+      assertThat(item.videoId()).isEqualTo("VIDEO123");
+    });
+  }
+
+  @Test
   void readModifyWritesSortingOnlyForUsersWhoCanSeeTheManagedFolder() throws Exception {
     AtomicInteger posts = new AtomicInteger();
     AtomicReference<String> preferences = new AtomicReference<>("""
