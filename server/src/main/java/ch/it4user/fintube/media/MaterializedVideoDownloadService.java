@@ -6,12 +6,16 @@ import ch.it4user.fintube.persistence.entities.UserVideoEntity;
 import ch.it4user.fintube.persistence.repositories.UserVideoRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -20,17 +24,23 @@ import java.util.concurrent.Executors;
 @Service
 public class MaterializedVideoDownloadService {
     private static final Logger LOG = LoggerFactory.getLogger(MaterializedVideoDownloadService.class);
+    private static final String DEFAULT_PO_TOKEN_PROVIDER_ARGS = "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416";
     private final SettingsService settings;
     private final UserVideoRepository userVideos;
     private final JellyfinSyncService jellyfin;
+    private final ProxiedHttpClient externalHttp;
+    private final String poTokenProviderUrl;
     private final ExecutorService workers = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "fintube-media-downloader"); thread.setDaemon(true); return thread;
     });
     private final ConcurrentHashMap<String, Boolean> queued = new ConcurrentHashMap<>();
 
     public MaterializedVideoDownloadService(SettingsService settings, UserVideoRepository userVideos,
-                                            JellyfinSyncService jellyfin) {
+                                            JellyfinSyncService jellyfin, ProxiedHttpClient externalHttp,
+                                            @Value("${fintube.youtube.po-token-provider-url:}") String poTokenProviderUrl) {
         this.settings = settings; this.userVideos = userVideos; this.jellyfin = jellyfin;
+        this.externalHttp = externalHttp;
+        this.poTokenProviderUrl = poTokenProviderUrl;
     }
 
     /** Queue one user's copy. Duplicate requests share the in-flight download. */
@@ -50,12 +60,10 @@ public class MaterializedVideoDownloadService {
             Path directory = Path.of(link.getLibraryPath()).toAbsolutePath().normalize();
             if (!Files.isDirectory(directory)) return;
             if (localMedia(directory) != null) return;
-            String executable = settings.value("yt_dlp_path");
-            if (executable == null || executable.isBlank()) executable = "yt-dlp";
+            Map<String, String> current = settings.values(false);
             Path template = directory.resolve("video.%(ext)s");
-            Process process = new ProcessBuilder(executable, "--no-playlist", "--no-progress", "--no-warnings",
-                    "-f", "bv*+ba/b", "--merge-output-format", "mp4", "--remux-video", "mp4",
-                    "-o", template.toString(), "https://www.youtube.com/watch?v=" + videoId)
+            Process process = new ProcessBuilder(downloadCommand(current, externalHttp.proxyArgument(current),
+                    poTokenProviderUrl, template, videoId))
                     .redirectErrorStream(true).start();
             byte[] output = process.getInputStream().readAllBytes();
             int exit = process.waitFor();
@@ -76,6 +84,34 @@ public class MaterializedVideoDownloadService {
         } catch (Exception failure) {
             LOG.warn("event=MEDIA_FILE_DOWNLOAD_FAILED userId={} video={} reason={}", userId, videoId, failure.toString());
         }
+    }
+
+    /** Builds the yt-dlp command with the same YouTube access settings as source probes. */
+    static List<String> downloadCommand(Map<String, String> settings, String proxy, String poTokenProviderUrl,
+                                        Path template, String videoId) {
+        List<String> command = new ArrayList<>();
+        command.add(settings.getOrDefault("yt_dlp_path", "yt-dlp"));
+        command.addAll(List.of("--no-playlist", "--no-progress", "--no-warnings",
+                "-f", "bv*+ba/b", "--merge-output-format", "mp4", "--remux-video", "mp4"));
+        if (proxy != null && !proxy.isBlank()) command.addAll(List.of("--proxy", proxy));
+        String cookieFile = settings.getOrDefault("cookie_file", "").trim();
+        if (!cookieFile.isBlank()) command.addAll(List.of("--cookies", cookieFile));
+        String playerClient = settings.getOrDefault("youtube_player_client", "").trim();
+        if (!playerClient.isBlank()) command.addAll(List.of("--extractor-args", "youtube:player_client=" + playerClient));
+        String poToken = settings.getOrDefault("youtube_po_token", "").trim();
+        if (!poToken.isBlank()) command.addAll(List.of("--extractor-args", "youtube:po_token=" + poToken));
+        String providerArgs = providerArguments(settings, poTokenProviderUrl);
+        if (!providerArgs.isBlank()) command.addAll(List.of("--extractor-args", providerArgs));
+        command.addAll(List.of("-o", template.toString(), "https://www.youtube.com/watch?v=" + videoId));
+        return command;
+    }
+
+    private static String providerArguments(Map<String, String> settings, String poTokenProviderUrl) {
+        if (!"true".equalsIgnoreCase(settings.getOrDefault("youtube_po_token_provider_enabled", "true"))) return "";
+        if (poTokenProviderUrl != null && !poTokenProviderUrl.isBlank()) {
+            return "youtubepot-bgutilhttp:base_url=" + poTokenProviderUrl;
+        }
+        return settings.getOrDefault("youtube_po_token_provider_args", DEFAULT_PO_TOKEN_PROVIDER_ARGS);
     }
 
     private static Path localMedia(Path directory) throws Exception {
