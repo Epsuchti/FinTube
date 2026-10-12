@@ -23,11 +23,14 @@ export class SubscriptionsPageComponent implements OnInit {
     readonly playlists = signal<PlaylistSubscription[]>([]);
     readonly filteredSubscriptions = computed(() => {
         const query = this.appliedSearch();
-        if (!query) return this.subscriptions();
+        const downloadsOnly = this.downloadsOnly();
         return this.subscriptions().filter(subscription =>
-            [subscription.name, subscription.channel_id, subscription.url]
-                .some(value => (value ?? '').toLowerCase().includes(query)));
+            (!downloadsOnly || this.downloadsEnabled(subscription))
+            && (!query || [subscription.name, subscription.channel_id, subscription.url]
+                .some(value => (value ?? '').toLowerCase().includes(query))));
     });
+    /** When set, only channels with at least one saved download limit above zero are listed. */
+    readonly downloadsOnly = signal(false);
     readonly loading = signal(false);
     readonly error = signal('');
     readonly notice = signal('');
@@ -336,6 +339,17 @@ export class SubscriptionsPageComponent implements OnInit {
 
     setLiveStreamImportCount(subscription: Subscription, value: string | number): void {
         this.liveStreamImportCounts.update(current => ({...current, [subscription.id]: Number(value)}));
+    }
+
+    /** Uses the saved values, so a channel does not disappear from the filtered list while it is being edited. */
+    downloadsEnabled(subscription: Subscription): boolean {
+        return (subscription.download_count ?? 0) > 0
+            || (subscription.short_download_count ?? 0) > 0
+            || (subscription.live_stream_download_count ?? 0) > 0;
+    }
+
+    toggleDownloadsOnly(): void {
+        this.downloadsOnly.update(value => !value);
     }
 
     downloadCount(subscription: Subscription): number {

@@ -4,6 +4,7 @@ import ch.it4user.fintube.core.ApplicationPaths;
 import ch.it4user.fintube.core.ApplicationClock;
 import ch.it4user.fintube.core.SettingsService;
 import ch.it4user.fintube.media.BackgroundFillService;
+import ch.it4user.fintube.media.DownloadedArtwork;
 import ch.it4user.fintube.media.MaterializedVideoDownloadService;
 import ch.it4user.fintube.media.ProxiedHttpClient;
 import ch.it4user.fintube.persistence.entities.UserEntity;
@@ -826,14 +827,29 @@ public class YouTubeSyncService {
     downloadThumbnail(folderThumbnail, channelPath.resolve("folder.jpg"));
     String token = link == null ? UUID.randomUUID().toString().replace("-", "") : link.getPlaybackToken();
     String base = settings().getOrDefault("public_base_url", "http://localhost:8080");
-    Files.writeString(path.resolve("video.strm"), base + "/play/" + video + "?token=" + token + "\n");
+    // Once the video was downloaded the local file replaces the .strm. Writing the .strm again would put two
+    // playable files into the folder and Jellyfin would list the video twice (inside a folder named after the
+    // video id, with artwork matched online instead of our thumbnail).
+    removeDownloadLeftovers(path);
+    boolean downloaded = MaterializedVideoDownloadService.localMedia(path) != null;
+    if (!downloaded) {
+      Files.writeString(path.resolve("video.strm"), base + "/play/" + video + "?token=" + token + "\n");
+    } else {
+      Files.deleteIfExists(path.resolve("video.strm"));
+    }
     String date = published == null ? "" : published.length() >= 10 ? published.substring(0, 10) : published;
-    String nfo = "<movie><title>" + xml(title) + "</title><plot>" + xml(description) + "</plot><studio>"
+    String nfo = "<movie><title>" + xml(displayTitle(title, date)) + "</title><originaltitle>" + xml(title)
+        + "</originaltitle><sorttitle>" + xml(title) + "</sorttitle><plot>" + xml(description) + "</plot><studio>"
         + xml(folderName) + "</studio><runtime>" + Math.max(1, duration / 60)
         + "</runtime><uniqueid type=\"youtube\">" + xml(video) + "</uniqueid><premiered>" + xml(date)
         + "</premiered><tagline>" + xml(availability) + "</tagline></movie>";
     Files.writeString(path.resolve("video.nfo"), nfo);
     downloadThumbnail(thumbnail, path.resolve("video-thumb.jpg"));
+    // video-thumb.jpg is only Jellyfin's "Thumb" image. Also provide the primary image locally so Jellyfin never
+    // falls back to an online poster lookup or a frame grab of the downloaded file.
+    copyIfMissing(path.resolve("video-thumb.jpg"), path.resolve("video-poster.jpg"));
+    // Downloaded videos get a green frame around their artwork; it is removed again if the file disappears.
+    DownloadedArtwork.apply(path, downloaded);
     if (newLink) {
       link = new UserVideoEntity(linkId, path.toString(), token, now());
     } else if (migrateExisting) {
@@ -843,6 +859,35 @@ public class YouTubeSyncService {
     if (newLink) userVideos.save(link);
     jellyfin.afterLibraryGeneration(video, path, duration);
     if (newFolder) jellyfin.afterManagedFolderGeneration(root, channelPath);
+  }
+
+  /** Removes yt-dlp intermediate files that older builds left next to the media (each showed up in Jellyfin). */
+  private static void removeDownloadLeftovers(Path folder) {
+    try (DirectoryStream<Path> entries = Files.newDirectoryStream(folder)) {
+      for (Path entry : entries) {
+        String name = entry.getFileName().toString();
+        if (Files.isRegularFile(entry, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+            && name.matches("video\\.(f\\d+.*|temp\\..*|.*\\.part|.*\\.ytdl|.*\\.part-Frag\\d+)")) {
+          Files.deleteIfExists(entry);
+        }
+      }
+    } catch (IOException ignored) { }
+  }
+
+  /**
+   * Jellyfin only shows the year on movie cards, so the upload date is appended to the title
+   * ("Title · 03.10.26"). The nfo sorttitle keeps the plain title for A–Z sorting.
+   */
+  static String displayTitle(String title, String isoDate) {
+    String clean = title == null ? "" : title;
+    if (isoDate == null || !isoDate.matches("\\d{4}-\\d{2}-\\d{2}")) return clean;
+    String date = isoDate.substring(8, 10) + "." + isoDate.substring(5, 7) + "." + isoDate.substring(2, 4);
+    return clean + " · " + date;
+  }
+
+  private static void copyIfMissing(Path source, Path target) {
+    if (!Files.isRegularFile(source) || Files.exists(target)) return;
+    try { Files.copy(source, target); } catch (IOException ignored) { }
   }
 
   private void downloadThumbnail(String url, Path target) {

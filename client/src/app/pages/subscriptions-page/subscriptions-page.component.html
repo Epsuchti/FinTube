@@ -70,7 +70,10 @@
       <button class="primary" type="submit" [disabled]="loading()">Search</button>
     </div>
   </form>
-  <div class="toolbar-summary"><strong>{{ filteredSubscriptions().length }}</strong><span>{{ appliedSearch() ? 'matching channels' : 'channels' }}</span></div>
+  <div class="toolbar-filters">
+    <button class="filter-toggle" type="button" [class.active]="downloadsOnly()" [attr.aria-pressed]="downloadsOnly()" (click)="toggleDownloadsOnly()">↓ Downloading only</button>
+    <div class="toolbar-summary"><strong>{{ filteredSubscriptions().length }}</strong><span>{{ appliedSearch() || downloadsOnly() ? 'matching channels' : 'channels' }}</span></div>
+  </div>
 </section>
 
 @if (loading()) {<div class="loading-state subscription-loading" role="status"><span class="spinner" aria-hidden="true"></span><span>{{ subscriptions().length ? 'Updating subscriptions…' : 'Loading subscriptions…' }}</span></div>}
@@ -80,7 +83,7 @@
       <div class="subscription-card-top">
         <div class="channel-avatar">{{ subscription.name.charAt(0).toUpperCase() }}</div>
         <div class="subscription-heading">
-          <div class="card-title-row"><h3>{{ subscription.name }}</h3><span class="status" [class.status-off]="!enabled(subscription)">{{ enabled(subscription) ? 'Enabled' : 'Paused' }}</span></div>
+          <div class="card-title-row"><h3>{{ subscription.name }}</h3>@if (downloadsEnabled(subscription)) {<span class="status status-download" title="Downloads videos as local files">↓ Downloads</span>}<span class="status" [class.status-off]="!enabled(subscription)">{{ enabled(subscription) ? 'Enabled' : 'Paused' }}</span></div>
           @if (subscription.url) {<a class="channel-link" [href]="subscription.url" target="_blank" rel="noreferrer">Open on YouTube ↗</a>}
         </div>
       </div>
@@ -113,6 +116,6 @@
       </div>
     </article>
   } @empty {
-    <div class="empty-state"><div class="empty-icon">＋</div><h3>{{ appliedSearch() ? 'No matching channels' : 'No subscriptions yet' }}</h3><p class="muted">{{ appliedSearch() ? 'Try a different search.' : 'Add a channel above or import your YouTube subscriptions to populate your private Jellyfin library.' }}</p></div>
+    <div class="empty-state"><div class="empty-icon">＋</div><h3>{{ appliedSearch() || downloadsOnly() ? 'No matching channels' : 'No subscriptions yet' }}</h3><p class="muted">{{ downloadsOnly() ? 'No channel downloads videos yet. Set a download limit in the channel settings.' : appliedSearch() ? 'Try a different search.' : 'Add a channel above or import your YouTube subscriptions to populate your private Jellyfin library.' }}</p></div>
   }
 </div>}

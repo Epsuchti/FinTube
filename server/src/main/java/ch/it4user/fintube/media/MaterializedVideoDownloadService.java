@@ -24,6 +24,8 @@ import java.util.concurrent.Executors;
 @Service
 public class MaterializedVideoDownloadService {
     private static final Logger LOG = LoggerFactory.getLogger(MaterializedVideoDownloadService.class);
+    /** Hidden folder (ignored by Jellyfin) where yt-dlp works before the finished file is moved into place. */
+    static final String STAGING_DIRECTORY = ".fintube-download";
     private static final String DEFAULT_PO_TOKEN_PROVIDER_ARGS = "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416";
     private final SettingsService settings;
     private final UserVideoRepository userVideos;
@@ -61,22 +63,32 @@ public class MaterializedVideoDownloadService {
             if (!Files.isDirectory(directory)) return;
             if (localMedia(directory) != null) return;
             Map<String, String> current = settings.values(false);
-            Path template = directory.resolve("video.%(ext)s");
+            // yt-dlp writes intermediate streams (video.f137.mp4, *.part, ...) before merging. Keep them in a
+            // hidden staging folder so Jellyfin never indexes half-finished files as additional videos.
+            Path staging = directory.resolve(STAGING_DIRECTORY);
+            deleteTree(staging);
+            Files.createDirectories(staging);
+            Path template = staging.resolve("video.%(ext)s");
             Process process = new ProcessBuilder(downloadCommand(current, externalHttp.proxyArgument(current),
                     poTokenProviderUrl, template, videoId))
                     .redirectErrorStream(true).start();
             byte[] output = process.getInputStream().readAllBytes();
             int exit = process.waitFor();
-            Path media = localMedia(directory);
+            Path media = localMedia(staging);
             if (exit != 0 || media == null) {
+                deleteTree(staging);
                 String detail = new String(output).strip();
                 if (detail.length() > 500) detail = detail.substring(0, 500) + "…";
                 LOG.warn("event=MEDIA_FILE_DOWNLOAD_FAILED userId={} video={} exitCode={} detail={}", userId, videoId, exit, detail);
                 return;
             }
             Path canonical = directory.resolve("video." + extension(media));
-            if (!media.equals(canonical)) Files.move(media, canonical, StandardCopyOption.REPLACE_EXISTING);
+            Files.move(media, canonical, StandardCopyOption.REPLACE_EXISTING);
+            deleteTree(staging);
+            // A folder must contain exactly one playable file, otherwise Jellyfin shows the video twice and stops
+            // treating the folder as a single movie (losing the local artwork).
             Files.deleteIfExists(directory.resolve("video.strm"));
+            DownloadedArtwork.apply(directory, true);
             jellyfin.afterLibraryGeneration(videoId, directory, 0);
             LOG.info("event=MEDIA_FILE_DOWNLOAD_COMPLETED userId={} video={} path={}", userId, videoId, canonical);
         } catch (InterruptedException interrupted) {
@@ -114,12 +126,21 @@ public class MaterializedVideoDownloadService {
         return settings.getOrDefault("youtube_po_token_provider_args", DEFAULT_PO_TOKEN_PROVIDER_ARGS);
     }
 
-    private static Path localMedia(Path directory) throws Exception {
+    /** Returns the downloaded media file of a library folder, or {@code null} while it still plays via .strm. */
+    public static Path localMedia(Path directory) throws java.io.IOException {
+        if (!Files.isDirectory(directory)) return null;
         try (var files = Files.list(directory)) {
             return files.filter(Files::isRegularFile)
                     .filter(path -> path.getFileName().toString().matches("video\\.(mp4|mkv|webm|m4v|mov)"))
                     .sorted(Comparator.comparing(path -> path.getFileName().toString()))
                     .findFirst().orElse(null);
+        }
+    }
+
+    private static void deleteTree(Path path) throws java.io.IOException {
+        if (!Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return;
+        try (var walk = Files.walk(path)) {
+            for (Path entry : walk.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(entry);
         }
     }
 

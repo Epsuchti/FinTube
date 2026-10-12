@@ -119,6 +119,8 @@ button:hover:not(:disabled), .button:hover { border-color: #46617f; background: 
 .card-title-row h3 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status { display: inline-block; flex: none; border-radius: 99px; padding: 4px 8px; color: #a5edc8; background: #153d37; font-size: .66rem; font-weight: 800; letter-spacing: .05em; }
 .status-off { color: #d6bf91; background: #3c3020; }
+.status-download { margin-right: 6px; color: #0c2a1a; background: #2ecc71; }
+.subscription-heading .status-download + .status { margin-left: 0; }
 .status-admin { color: #ffabb7; background: #462533; }
 .status-running { color: #a5c9f6; background: #203d63; }
 .card-actions { display: flex; flex-wrap: wrap; gap: 7px; width: 100%; margin-top: 12px; }
@@ -143,6 +145,10 @@ button:hover:not(:disabled), .button:hover { border-color: #46617f; background: 
 .subscription-search { flex: 1; max-width: 620px; }
 .subscription-search label { display: block; margin-bottom: 7px; color: #9db0c8; font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .subscription-search input { border-color: #385675; padding: 13px 15px; background: #0d1a2c; }
+.toolbar-filters { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.filter-toggle { border: 1px solid #385675; border-radius: 99px; padding: 8px 14px; color: #9db0c8; background: #0d1a2c; font-size: .8rem; font-weight: 700; cursor: pointer; }
+.filter-toggle:hover { border-color: #5a7ea3; color: #e4edf9; }
+.filter-toggle.active { border-color: #2ecc71; color: #a5edc8; background: #153d37; }
 .toolbar-summary { display: flex; align-items: baseline; gap: 7px; color: #7f94ae; font-size: .8rem; }
 .toolbar-summary strong { color: #e4edf9; font-size: 1.35rem; }
 .video-table-panel { overflow: hidden; padding: 0; }
