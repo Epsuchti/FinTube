@@ -312,11 +312,15 @@ public class YouTubeSyncService {
     int videoLimit = bounded(channelEntity.getDownloadCount());
     int shortLimit = bounded(channelEntity.getShortDownloadCount());
     int liveStreamLimit = bounded(channelEntity.getLiveStreamDownloadCount());
-    if (videoLimit == 0 && shortLimit == 0 && liveStreamLimit == 0) return;
     try {
       List<VideoEntity> videosToPrefetch = prefetchCategory(channel, videoLimit, 0, 0);
       List<VideoEntity> shortsToPrefetch = prefetchCategory(channel, shortLimit, 1, 0);
       List<VideoEntity> liveStreamsToPrefetch = prefetchCategory(channel, liveStreamLimit, 0, 1);
+      Set<String> wanted = new HashSet<>();
+      for (List<VideoEntity> list : List.of(videosToPrefetch, shortsToPrefetch, liveStreamsToPrefetch))
+        list.forEach(video -> wanted.add(video.getVideoId()));
+      evictDownloadsOutside(channel, wanted);
+      if (videoLimit == 0 && shortLimit == 0 && liveStreamLimit == 0) return;
       LOG.info("event=YOUTUBE_MEDIA_DOWNLOAD_REQUESTED channel={} videoLimit={} shortLimit={} liveStreamLimit={} videos={} shorts={} liveStreams={}",
           channel, videoLimit, shortLimit, liveStreamLimit, videosToPrefetch.size(), shortsToPrefetch.size(), liveStreamsToPrefetch.size());
       videosToPrefetch.forEach(video -> materializeForSubscribers(channel, video.getVideoId()));
@@ -326,6 +330,36 @@ public class YouTubeSyncService {
       // Prefetch must never fail metadata synchronization or interactive playback.
       LOG.warn("event=YOUTUBE_MEDIA_DOWNLOAD_REQUEST_FAILED channel={} reason={}", channel, ignored.toString(), ignored);
     }
+  }
+
+  /**
+   * Deletes downloaded files that are no longer within the channel's newest-N download window. The folder falls back
+   * to its .strm and the green frame is removed. Jellyfin favorites are kept (see MaterializedVideoDownloadService).
+   */
+  private void evictDownloadsOutside(String channel, Set<String> wanted) {
+    List<VideoEntity> stored = videos.findByChannelIdOrderByPublishedAtDesc(channel);
+    Path usersRoot = paths.usersRoot.toAbsolutePath().normalize();
+    int evicted = 0;
+    for (YouTubeSubscriptionEntity subscription : subscriptions.findByChannelIdAndEnabled(channel, 1)) {
+      long user = subscription.getUserId();
+      for (VideoEntity video : stored) {
+        if (wanted.contains(video.getVideoId())) continue;
+        UserVideoEntity link = userVideos.findById(new UserVideoId(user, video.getVideoId())).orElse(null);
+        if (link == null || link.getLibraryPath() == null) continue;
+        try {
+          Path folder = Path.of(link.getLibraryPath()).toAbsolutePath().normalize();
+          if (!folder.startsWith(usersRoot) || folder.equals(usersRoot)) continue;
+          if (!MaterializedVideoDownloadService.evict(folder)) continue;
+          linkStoredVideo(user, video.getVideoId()); // rewrites the .strm and restores the unframed artwork
+          evicted++;
+          LOG.info("event=MEDIA_FILE_EVICTED userId={} video={} path={}", user, video.getVideoId(), folder);
+        } catch (Exception failure) {
+          LOG.warn("event=MEDIA_FILE_EVICT_FAILED userId={} video={} reason={}", user, video.getVideoId(),
+              failure.toString());
+        }
+      }
+    }
+    if (evicted > 0) LOG.info("event=YOUTUBE_MEDIA_DOWNLOADS_EVICTED channel={} files={}", channel, evicted);
   }
 
   private void materializeForSubscribers(String channel, String videoId) {

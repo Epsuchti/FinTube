@@ -7,6 +7,7 @@ import ch.it4user.fintube.media.ProxiedHttpClient;
 import ch.it4user.fintube.media.MaterializedVideoDownloadService;
 import ch.it4user.fintube.persistence.entities.UserEntity;
 import ch.it4user.fintube.persistence.entities.UserVideoEntity;
+import ch.it4user.fintube.persistence.entities.UserVideoId;
 import ch.it4user.fintube.persistence.entities.VideoEntity;
 import ch.it4user.fintube.persistence.entities.WatchedVideoEntity;
 import ch.it4user.fintube.persistence.repositories.UserRepository;
@@ -24,10 +25,12 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -80,6 +83,7 @@ public class WatchedVideoSyncService {
     Map<String, String> current = settings.values(false);
     if (enabled(current, "jellyfin_remove_watched")) removePlayedJellyfinItems(current);
     if (enabled(current, "jellyfin_download_favorites")) downloadFavoriteJellyfinItems(current);
+    else updateFavoriteMarkers(Set.of());
     if (enabled(current, "youtube_mark_watched")) markPendingOnYouTube(current);
   }
 
@@ -92,13 +96,31 @@ public class WatchedVideoSyncService {
     List<UserVideoEntity> links = new ArrayList<>(userVideos.findAll());
     Map<Long, Path> roots = userRoots();
     int queued = 0;
+    Set<UserVideoId> favoriteLinks = new HashSet<>();
     for (JellyfinClient.FavoriteItem item : favorites.items()) {
       UserVideoEntity link = matchingLink(item.videoId(), item.path(), links, roots);
       if (link == null) continue;
+      favoriteLinks.add(link.getId());
       materializedDownloads.enqueue(link.getId().getUserId(), link.getId().getVideoId());
       queued++;
     }
+    // Mark favorites first so the channel download cleanup keeps them even outside the newest-N window.
+    updateFavoriteMarkers(favoriteLinks);
     if (queued > 0) LOG.info("event=JELLYFIN_FAVORITES_DOWNLOAD_QUEUED videos={}", queued);
+  }
+
+  /** Sets the favorite marker on the given library folders and clears it everywhere else. */
+  private void updateFavoriteMarkers(Set<UserVideoId> favoriteLinks) {
+    for (UserVideoEntity link : userVideos.findAll()) {
+      if (link.getLibraryPath() == null) continue;
+      try {
+        MaterializedVideoDownloadService.markFavorite(Path.of(link.getLibraryPath()).toAbsolutePath().normalize(),
+            favoriteLinks.contains(link.getId()));
+      } catch (Exception e) {
+        LOG.warn("event=FAVORITE_MARKER_UPDATE_FAILED userId={} video={} reason={}",
+            link.getId().getUserId(), link.getId().getVideoId(), safeMessage(e));
+      }
+    }
   }
 
   private void removePlayedJellyfinItems(Map<String, String> current) {
