@@ -1,8 +1,11 @@
 FROM eclipse-temurin:21-jre
 
 WORKDIR /app
+# yt-dlp only enables Deno by default; /etc/yt-dlp.conf makes it use the installed Node
+# for YouTube's n/sig challenges (yt-dlp-ejs provides the solver scripts).
 RUN apt-get update && apt-get install -y --no-install-recommends curl ffmpeg nodejs python3 python3-pip && rm -rf /var/lib/apt/lists/* \
-    && python3 -m pip install --break-system-packages --no-cache-dir --upgrade yt-dlp yt-dlp-ejs 'bgutil-ytdlp-pot-provider==2.0.0'
+    && python3 -m pip install --break-system-packages --no-cache-dir --upgrade yt-dlp yt-dlp-ejs 'bgutil-ytdlp-pot-provider==2.0.0' \
+    && printf -- '--js-runtimes node\n' > /etc/yt-dlp.conf
 
 ARG JAR_FILE=target/fintube-server-*.jar
 COPY ${JAR_FILE} app.jar
