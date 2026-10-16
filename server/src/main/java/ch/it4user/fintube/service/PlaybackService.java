@@ -99,6 +99,8 @@ public class PlaybackService {
                         video, source.format(), source.height(), source.videoTracks().size(),
                         plan == null ? 0 : plan.cuts().size(),
                         plan == null ? 0 : String.format(java.util.Locale.ROOT, "%.1f", source.duration() - plan.duration()));
+                notifySponsors(video, resolvedToken, plan == null ? java.util.List.of()
+                        : plan.cuts().stream().map(c -> new double[]{c.start(), c.end()}).toList());
                 return indexedMaster(video, resolvedToken, source, plan);
             }
             if (source.fmp4()) {
@@ -107,12 +109,28 @@ public class PlaybackService {
                 reportRuntime(video, resolvedToken, "fmp4:" + source.format() + (cuts == null ? "" : ":" + cuts), source.duration() - removed);
                 LOG.info("event=PLAYBACK_FMP4_SELECTED video={} format={} height={} sponsorCuts={} removedSeconds={}", video,
                         source.format(), source.height(), cuts == null ? "none" : cuts, String.format(java.util.Locale.ROOT, "%.1f", removed));
+                java.util.List<double[]> removedSpans = new java.util.ArrayList<>();
+                boolean[] droppedParts = dropped(cuts, source.fragments().size());
+                for (int i = 0; i < droppedParts.length; i++) if (droppedParts[i]) {
+                    var part = source.fragments().get(i);
+                    removedSpans.add(new double[]{part.startSeconds(), part.startSeconds() + part.seconds()});
+                }
+                notifySponsors(video, resolvedToken, removedSpans);
                 return fmp4Master(video, resolvedToken, source, cuts);
             }
             if (backgroundFillOnPlayback()) filler.enqueue(video, "playback_manifest");
             var sponsorSegments = sponsorBlock.skipSegments(video);
             var selected = renditions.select(video, source, sponsorSegments);
             reportRuntime(video, resolvedToken, selected);
+            java.util.List<double[]> removedSpans = new java.util.ArrayList<>();
+            if (selected.plan().edited()) {
+                double position = 0;
+                for (var kept : selected.plan().kept()) {
+                    if (kept.start() > position + 0.01) removedSpans.add(new double[]{position, kept.start()});
+                    position = kept.end();
+                }
+            }
+            notifySponsors(video, resolvedToken, removedSpans);
             LOG.info("event=PLAYBACK_RENDITION_SELECTED video={} rendition={} edited={} durationSeconds={}",
                     video, selected.id(), selected.plan().edited(), selected.plan().duration());
             // A master playlist is the selection point. The referenced VOD and its media never change.
@@ -487,6 +505,31 @@ public class PlaybackService {
 
     private void reportRuntime(String video, String token, SponsorRenditionService.Selection selection) {
         reportRuntime(video, token, selection.id(), selection.plan().duration());
+    }
+
+    private ch.it4user.fintube.integration.SponsorBlockNotifier sponsorNotifier;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setSponsorNotifier(ch.it4user.fintube.integration.SponsorBlockNotifier notifier) { this.sponsorNotifier = notifier; }
+
+    /** Queues a Jellyfin on-screen message when SponsorBlock knows sponsors for this video. */
+    private void notifySponsors(String video, String token, java.util.List<double[]> removedSpans) {
+        if (sponsorNotifier == null || sponsorBlock == null) return;
+        try {
+            var sponsors = sponsorBlock.skipSegments(video);
+            if (sponsors.isEmpty()) return;
+            int removed = 0;
+            double removedSeconds = 0;
+            for (double[] span : removedSpans) removedSeconds += span[1] - span[0];
+            for (var sponsor : sponsors)
+                for (double[] span : removedSpans)
+                    if (span[0] < sponsor.endSeconds() && span[1] > sponsor.startSeconds()) { removed++; break; }
+            for (var userVideo : userVideos.findByIdVideoIdIn(java.util.List.of(video)))
+                if (token.equals(userVideo.getPlaybackToken()) && userVideo.getLibraryPath() != null)
+                    sponsorNotifier.playbackStarted(video, Path.of(userVideo.getLibraryPath()), sponsors.size(), removed, removedSeconds);
+        } catch (Exception failure) {
+            LOG.warn("event=SPONSOR_NOTIFY_QUEUE_FAILED video={} reason={}", video, failure.toString());
+        }
     }
 
     private void reportRuntime(String video, String token, String version, double duration) {

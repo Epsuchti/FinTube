@@ -221,6 +221,8 @@ When **Skip SponsorBlock sponsor segments** is enabled, sponsors are removed fro
 - **YouTube HLS fMP4 and H.264 MPEG-TS streams:** whole segments that lie completely inside a sponsor are removed.
 - **Single-file fallbacks** (only used when YouTube offers nothing segmented) cannot be cut.
 
+When a video has sponsor segments, FinTube also shows a short on-screen message in the Jellyfin client a few seconds after playback starts, for example *"2 sponsor segments removed (1:23 min skipped)"*, or that sponsors were found but could not be removed. This needs the Jellyfin connection (URL and API key) and works in clients that support Jellyfin's *display message* command (web, Android, Android TV); other clients are skipped and logged as `SPONSOR_NOTIFY_UNSUPPORTED`. Turn it off with **Show a Jellyfin message when sponsors are skipped** (`sponsorblock_notify`) in Global settings.
+
 The reported runtime in Jellyfin reflects the shortened video. Each cut set gets its own playlist URL, so a SponsorBlock update never changes a session that is already playing.
 
 ## Secure remote access
@@ -287,6 +289,7 @@ Every playback decision is logged with an `event=` key; follow them with `docker
 | `MEDIA_SOURCE_INDEXED_SELECTED` | The chosen video, audio and H.264 compatibility variant (`compatReason` explains a missing one). |
 | `MEDIA_SOURCE_HLS_SELECTED`, `MEDIA_SOURCE_SINGLE_SEGMENT_FALLBACK`, `MEDIA_SOURCE_LOW_COMPATIBILITY_FALLBACK` | The older or last-resort paths were used instead. |
 | `SPONSOR_SEGMENTS_LOADED`, `SPONSOR_INDEXED_CUT_PLANNED` / `…_RETAINED`, `SPONSOR_INDEXED_PLAN_READY` | SponsorBlock data, each cut (including how much sponsor is left) and why a sponsor was kept. |
+| `SPONSOR_NOTIFY_SENT` / `SPONSOR_NOTIFY_UNSUPPORTED` / `SPONSOR_NOTIFY_NO_SESSION` | Whether the on-screen SponsorBlock message reached a Jellyfin client. |
 | `PLAYBACK_INDEXED_TRACK_REQUESTED` | Which variant the player actually picked (`v0` = H.264, `v1` = VP9/AV1) and which client asked. |
 | `PLAYBACK_INDEXED_SEGMENT_SLOW`, `MEDIA_FRAGMENT_DOWNLOAD_SLOW` | A segment took more than 3 s to deliver or to download from YouTube. Normal per-segment downloads are only logged at debug level. |
 | `MEDIA_FILE_DOWNLOAD_STARTED`, `MEDIA_FILE_STREAMS` | Downloads: the yt-dlp format selector used, the resulting codecs and whether anything is re-encoded. |

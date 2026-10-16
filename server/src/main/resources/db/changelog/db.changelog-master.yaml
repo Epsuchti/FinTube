@@ -51,3 +51,5 @@ databaseChangeLog:
       file: db/changelog/026-jellyfin-favorite-downloads.yaml
   - include:
       file: db/changelog/027-playback-compat-variant.yaml
+  - include:
+      file: db/changelog/028-sponsorblock-notify.yaml

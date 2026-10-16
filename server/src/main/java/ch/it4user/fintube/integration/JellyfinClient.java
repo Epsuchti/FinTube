@@ -449,6 +449,50 @@ public class JellyfinClient {
     }
   }
 
+  /** An active Jellyfin client session that is currently playing an item. */
+  public record Session(String id, String client, String deviceName, String userName, boolean supportsMessages) {}
+
+  /** Sessions whose now-playing item is {@code itemId}. Empty when Jellyfin is unavailable. */
+  public List<Session> sessionsPlaying(String itemId) {
+    Configuration c = configuration();
+    if (!c.enabled() || !c.configured() || itemId == null || itemId.isBlank()) return List.of();
+    try {
+      HttpResponse<String> r = request(c, "GET", "/Sessions?ActiveWithinSeconds=300", "");
+      if (r.statusCode() / 100 != 2) return List.of();
+      List<Session> result = new ArrayList<>();
+      for (JsonNode session : json.readTree(r.body())) {
+        if (!itemId.equals(session.path("NowPlayingItem").path("Id").asText(""))) continue;
+        boolean messages = false;
+        for (JsonNode command : session.path("Capabilities").path("SupportedCommands"))
+          if ("DisplayMessage".equals(command.asText())) messages = true;
+        for (JsonNode command : session.path("SupportedCommands"))
+          if ("DisplayMessage".equals(command.asText())) messages = true;
+        result.add(new Session(session.path("Id").asText(), session.path("Client").asText(""),
+            session.path("DeviceName").asText(""), session.path("UserName").asText(""), messages));
+      }
+      return result;
+    } catch (Exception e) {
+      return List.of();
+    }
+  }
+
+  /** Shows a message on a Jellyfin client (supported by the web, Android and Android TV apps). */
+  public Operation sendMessage(String sessionId, String header, String text, long timeoutMs) {
+    Configuration c = configuration();
+    if (!c.enabled() || !c.configured()) return new Operation(false, 0, "Jellyfin integration is disabled");
+    try {
+      ObjectNode body = json.createObjectNode();
+      body.put("Header", header);
+      body.put("Text", text);
+      body.put("TimeoutMs", timeoutMs);
+      HttpResponse<String> r = request(c, "POST", "/Sessions/" + encPath(sessionId) + "/Message", json.writeValueAsString(body));
+      return r.statusCode() / 100 == 2 ? new Operation(true, r.statusCode(), "message sent")
+          : new Operation(false, r.statusCode(), operationFailureMessage(r.statusCode()));
+    } catch (Exception e) {
+      return new Operation(false, 0, "Jellyfin is unreachable");
+    }
+  }
+
   private HttpResponse<String> request(Configuration c, String method, String path, String body)
       throws Exception {
     HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(c.baseUrl() + path))
