@@ -90,6 +90,10 @@ public class MaterializedVideoDownloadService {
             deleteTree(staging);
             Files.createDirectories(staging);
             Path template = staging.resolve("video.%(ext)s");
+            LOG.info("event=MEDIA_FILE_DOWNLOAD_STARTED userId={} video={} quality={} codecs={} selector=\"{}\" sort={}", userId, videoId,
+                    preferences == null || preferences.getQuality() == null ? current.getOrDefault("stream_quality", "1080") : preferences.getQuality().getValue(),
+                    allowed, formatSelector(preferences, current), formatSort(preferences));
+            long started = System.nanoTime();
             Process process = new ProcessBuilder(downloadCommand(current, externalHttp.proxyArgument(current),
                     poTokenProviderUrl, template, videoId, preferences))
                     .redirectErrorStream(true).start();
@@ -103,6 +107,8 @@ public class MaterializedVideoDownloadService {
                 LOG.warn("event=MEDIA_FILE_DOWNLOAD_FAILED userId={} video={} exitCode={} detail={}", userId, videoId, exit, detail);
                 return;
             }
+            LOG.info("event=MEDIA_FILE_DOWNLOADED userId={} video={} file={} bytes={} durationMs={}", userId, videoId,
+                    media.getFileName(), Files.size(media), (System.nanoTime() - started) / 1_000_000);
             media = ensureDirectPlayable(media, staging, current, userId, videoId, allowed);
             Path canonical = directory.resolve("video." + extension(media));
             Files.move(media, canonical, StandardCopyOption.REPLACE_EXISTING);
@@ -173,6 +179,9 @@ public class MaterializedVideoDownloadService {
             LOG.warn("event=MEDIA_FILE_PROBE_FAILED userId={} video={} path={}", userId, videoId, media);
             return media;
         }
+        LOG.info("event=MEDIA_FILE_STREAMS userId={} video={} videoCodec={} pixelFormat={} audioCodec={} container={} allowed={} copyVideo={} copyAudio={}",
+                userId, videoId, info.videoCodec(), info.pixelFormat(), info.audioCodec(), extension(media), allowed,
+                info.videoCompatible(allowed), info.audioCompatible());
         if (info.directPlayable(allowed) && "mp4".equalsIgnoreCase(extension(media))) return media;
         Path output = workDir.resolve("video.compat.mp4");
         Files.deleteIfExists(output);

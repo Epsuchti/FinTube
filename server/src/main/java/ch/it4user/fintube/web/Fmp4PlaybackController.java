@@ -43,10 +43,11 @@ public class Fmp4PlaybackController {
 
     @GetMapping("/play/{video}/idx/{format}/{track}/index.m3u8")
     public ResponseEntity<String> indexedManifest(@PathVariable String video, @PathVariable String format,
-                                                  @PathVariable String track, @RequestParam String token) {
+                                                  @PathVariable String track, @RequestParam String token,
+                                                  @org.springframework.web.bind.annotation.RequestHeader(value = "User-Agent", required = false, defaultValue = "-") String userAgent) {
         return ResponseEntity.ok().contentType(MediaType.parseMediaType("application/vnd.apple.mpegurl"))
                 .header("Cache-Control", "private, no-store")
-                .body(playback.indexedTrackManifest(video, format, track, token));
+                .body(playback.indexedTrackManifest(video, format, track, token, userAgent));
     }
 
     @GetMapping("/play/{video}/idx/{format}/{track}/init.mp4")

@@ -342,9 +342,10 @@ public class MediaSourceService {
     String key = sourceKey(video, policyKey(preferences), preferences != null);
     persist(key, selected);
     sources.put(key, selected);
-    LOG.info("event=MEDIA_SOURCE_REFRESH_SUCCEEDED video={} reason={} format={} videoFormat={} audioFormat={} fragments={} durationSeconds={} progressive={} expiresAt={}",
-        video, reason, selected.format(), selected.videoFormat(), selected.audioFormat(), selected.fragments().size(),
-        selected.duration(), selected.progressive(), selected.expiresAt());
+    LOG.info("event=MEDIA_SOURCE_REFRESH_SUCCEEDED video={} reason={} format={} path={} videoFormat={} audioFormat={} codecs={} resolution={}x{} fragments={} indexedTracks={} durationSeconds={} progressive={} expiresAt={}",
+        video, reason, selected.format(), selected.indexed() ? "indexed-fmp4" : selected.fmp4() ? "hls-fmp4" : selected.progressive() ? "progressive" : "mpegts",
+        selected.videoFormat(), selected.audioFormat(), selected.codecs(), selected.width(), selected.height(),
+        selected.fragments().size(), selected.tracks().size(), selected.duration(), selected.progressive(), selected.expiresAt());
     return selected;
   }
 
@@ -457,26 +458,48 @@ public class MediaSourceService {
 
     // "everything" ignores the personal codec list; it is only used for the
     // H.264 compatibility variant that keeps non-VP9/AV1 devices on direct play.
+    String videoId = root.path("id").asText("?");
     List<Candidate> everything = new ArrayList<>();
     List<Candidate> all = new ArrayList<>();
+    java.util.Map<String, Integer> rejected = new java.util.TreeMap<>();
+    java.util.Map<String, String> bestPerCodec = new java.util.TreeMap<>();
     for (JsonNode f : root.path("formats")) {
-      if (f.path("has_drm").asBoolean(false)) continue;
       String vc = codecName(rawCodec(f, "vcodec"));
       String ac = codecName(rawCodec(f, "acodec"));
       if ("none".equals(vc) && "none".equals(ac) && likelyHlsAudio(f)) ac = "aac";
-      if (!allowedVideo.isEmpty() && !"none".equals(vc) && !allowedVideo.contains(vc)) continue;
-      if (!allowedAudio.isEmpty() && !"none".equals(ac) && !allowedAudio.contains(ac)) continue;
       int h = f.path("height").asInt(0);
-      if (h > ceiling) continue;
-      if (bestCompatible && !"none".equals(vc) && sdrRank(f) == 0) continue;
+      String protocol = f.path("protocol").asText("?");
+      String key = ("none".equals(vc) ? "audio:" + ac : vc) + "/" + protocol;
+      String previous = bestPerCodec.get(key);
+      int previousHeight = previous == null ? -1 : Integer.parseInt(previous.substring(0, previous.indexOf('p')));
+      if (h > previousHeight) bestPerCodec.put(key, h + "p(" + f.path("format_id").asText() + ")");
+      String reason = null;
+      if (f.path("has_drm").asBoolean(false)) reason = "drm";
+      else if (!allowedVideo.isEmpty() && !"none".equals(vc) && !allowedVideo.contains(vc)) reason = "admin_video_codec";
+      else if (!allowedAudio.isEmpty() && !"none".equals(ac) && !allowedAudio.contains(ac)) reason = "admin_audio_codec";
+      else if (h > ceiling) reason = "above_quality";
+      else if (bestCompatible && !"none".equals(vc) && sdrRank(f) == 0) reason = "hdr";
+      if (reason != null) {
+        rejected.merge(reason, 1, Integer::sum);
+        LOG.debug("event=MEDIA_SOURCE_FORMAT_REJECTED video={} format={} vcodec={} acodec={} height={} protocol={} reason={}",
+            videoId, f.path("format_id").asText(), rawCodec(f, "vcodec"), rawCodec(f, "acodec"), h, protocol, reason);
+        continue;
+      }
       int rank = !"none".equals(vc) ? rank(vc, preferredVideo) : rank(ac, preferredAudio);
       Candidate candidate = new Candidate(f, h, vc, ac, f.path("ext").asText(""), rank, f.path("tbr").asDouble(0));
       everything.add(candidate);
       // The personal codec list is a whitelist: an unlisted codec (for example
       // AV1 on a VP9-only household) is never selected as the main source.
-      if (candidate.hasVideo() && !preferredVideo.contains(vc)) continue;
+      if (candidate.hasVideo() && !preferredVideo.contains(vc)) {
+        rejected.merge("not_in_codec_list", 1, Integer::sum);
+        LOG.debug("event=MEDIA_SOURCE_FORMAT_REJECTED video={} format={} vcodec={} height={} protocol={} reason=not_in_codec_list",
+            videoId, candidate.id(), rawCodec(f, "vcodec"), h, protocol);
+        continue;
+      }
       all.add(candidate);
     }
+    LOG.info("event=MEDIA_SOURCE_SELECTION_STARTED video={} quality={} videoCodecs={} audioCodecs={} formats={} candidates={} rejected={} bestPerCodec={}",
+        videoId, quality, preferredVideo, preferredAudio, root.path("formats").size(), all.size(), rejected, bestPerCodec);
 
     Comparator<Candidate> videoOrder = Comparator.comparingInt(Candidate::height).reversed()
         .thenComparing(Comparator.comparingInt(Candidate::codecRank).reversed())
@@ -496,17 +519,32 @@ public class MediaSourceService {
         .filter(this::directPlayable).filter(c -> seekable(c) || isHls(c)).sorted(audioOrder).toList();
     List<Candidate> indexableAudios = all.stream().filter(MediaSourceService::indexableAudio)
         .sorted(audioOrder).toList();
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("event=MEDIA_SOURCE_VIDEO_ORDER video={} order={}", videoId,
+          videos.stream().limit(12).map(MediaSourceService::describe).toList());
+      LOG.debug("event=MEDIA_SOURCE_AUDIO_ORDER video={} indexable={} hls={}", videoId,
+          indexableAudios.stream().map(MediaSourceService::describe).toList(), audios.stream().map(MediaSourceService::describe).toList());
+    }
+    if (indexableAudios.isEmpty())
+      LOG.info("event=MEDIA_SOURCE_NO_INDEXABLE_AAC video={} reason=no_https_m4a_aac_format", videoId);
     java.util.Map<String, Candidate> timelines = new java.util.HashMap<>();
     java.util.Map<String, Object> indexes = new java.util.HashMap<>();
     for (Candidate videoCandidate : videos) {
       if (indexableVideo(videoCandidate)) {
         Source indexed = indexedSource(root, videoCandidate, indexableAudios, everything, ceiling, preferences, indexes);
         if (indexed != null) return indexed;
+        LOG.debug("event=MEDIA_SOURCE_CANDIDATE_SKIPPED video={} format={} path=indexed", videoId, describe(videoCandidate));
         continue;
       }
-      if (!seekable(videoCandidate) && !isHls(videoCandidate)) continue;
+      if (!seekable(videoCandidate) && !isHls(videoCandidate)) {
+        LOG.debug("event=MEDIA_SOURCE_CANDIDATE_SKIPPED video={} format={} reason=not_segmented_or_indexable", videoId, describe(videoCandidate));
+        continue;
+      }
       Candidate video = timeline(videoCandidate, timelines);
-      if (!seekable(video)) continue;
+      if (!seekable(video)) {
+        LOG.debug("event=MEDIA_SOURCE_CANDIDATE_SKIPPED video={} format={} reason=no_hls_timeline", videoId, describe(videoCandidate));
+        continue;
+      }
       if (video.progressive()) {
         // Progressive fMP4 needs a separate init-map path; use paired HLS instead.
         if (video.node().path("fragments").path(0).path("initUrl").isMissingNode())
@@ -515,11 +553,20 @@ public class MediaSourceService {
       }
       boolean fmp4Video = !video.node().path("fragments").path(0).path("initUrl").isMissingNode();
       // VP9/AV1 cannot be carried in the MPEG-TS remux path.
-      if (!fmp4Video && !"h264".equals(video.videoCodec())) continue;
+      if (!fmp4Video && !"h264".equals(video.videoCodec())) {
+        LOG.debug("event=MEDIA_SOURCE_CANDIDATE_SKIPPED video={} format={} reason=codec_not_allowed_in_mpegts", videoId, describe(videoCandidate));
+        continue;
+      }
       for (Candidate audioCandidate : audios) {
         Candidate audio = timeline(audioCandidate, timelines);
         if (!audio.node().path("fragments").path(0).path("initUrl").isMissingNode()) continue;
-        if (seekable(audio) && matchingTimelines(video, audio)) return makeSource(root, video, audio, false, preferences);
+        if (seekable(audio) && matchingTimelines(video, audio)) {
+          LOG.info("event=MEDIA_SOURCE_HLS_SELECTED video={} video_format={} audio_format={} fmp4={} segments={}",
+              videoId, describe(video), audio.id(), fmp4Video, partsOf(video.node()).size());
+          return makeSource(root, video, audio, false, preferences);
+        }
+        LOG.debug("event=MEDIA_SOURCE_HLS_PAIR_REJECTED video={} video_format={} audio_format={} videoSegments={} audioSegments={} reason=timelines_differ",
+            videoId, video.id(), audio.id(), partsOf(video.node()).size(), partsOf(audio.node()).size());
       }
     }
     // Last resort for a plain HTTP H.264 + AAC pair that could not be indexed:
@@ -548,6 +595,12 @@ public class MediaSourceService {
     }
     throw new IllegalStateException("no playable representation available for the configured codecs "
         + preferredVideo + " up to " + (ceiling == Integer.MAX_VALUE ? "best" : ceiling + "p"));
+  }
+
+  private static String describe(Candidate c) {
+    return c.id() + ":" + (c.hasVideo() ? c.videoCodec() + ":" + c.height() + "p" + (c.node().path("fps").asInt(0) > 0 ? c.node().path("fps").asInt(0) : "") : c.audioCodec())
+        + ":" + c.ext() + ":" + c.node().path("protocol").asText("?") + ":" + Math.round(c.bitrate()) + "k"
+        + (sdrRank(c.node()) == 0 ? ":HDR" : "");
   }
 
   private Candidate timeline(Candidate candidate, java.util.Map<String, Candidate> memo) throws Exception {
@@ -604,7 +657,8 @@ public class MediaSourceService {
     }
     List<IndexedTrack> tracks = new ArrayList<>();
     IndexedTrack compat = null;
-    if (!"h264".equals(primary.codec()) && compatVariantEnabled()) {
+    String compatReason = "h264".equals(primary.codec()) ? "primary_is_h264" : !compatVariantEnabled() ? "disabled" : null;
+    if (compatReason == null) {
       int compatCeiling = Math.min(1080, ceiling);
       List<Candidate> h264 = everything.stream().filter(MediaSourceService::indexableVideo)
           .filter(c -> "h264".equals(c.videoCodec()) && c.height() <= compatCeiling)
@@ -615,6 +669,7 @@ public class MediaSourceService {
         compat = indexTrack(candidate, "v", duration, memo);
         if (compat != null) break;
       }
+      compatReason = compat != null ? "added" : h264.isEmpty() ? "no_https_h264_format" : "h264_index_failed";
     }
     // The H.264 variant is listed first: ffmpeg-based consumers (Jellyfin remux
     // or transcode) use the first variant, and players that can decode the
@@ -628,8 +683,9 @@ public class MediaSourceService {
     for (IndexedTrack track : tracks) expiry = minExpiry(expiry, expiry(track.url()));
     double total = duration > 0 ? duration : primary.duration();
     String codecs = primary.codecs() + "," + audio.codecs();
-    LOG.info("event=MEDIA_SOURCE_INDEXED_SELECTED format={} video={} audio={} compat={}", format,
-        IndexedMediaService.describe(primary), audio.formatId(), compat == null ? "none" : IndexedMediaService.describe(compat));
+    LOG.info("event=MEDIA_SOURCE_INDEXED_SELECTED video={} format={} primary={} audio={} compat={} compatReason={} durationSeconds={} expiresAt={}",
+        root.path("id").asText("?"), format, IndexedMediaService.describe(primary), IndexedMediaService.describe(audio),
+        compat == null ? "none" : IndexedMediaService.describe(compat), compatReason, Math.round(total), expiry);
     return new Source(format, primary.formatId(), audio.formatId(), List.of(), (int) Math.ceil(total),
         targetDuration(tracks), primary.codec(), "aac", primary.container(), expiry, false,
         primary.width(), primary.height(), primary.fps(), primary.bandwidth() + audio.bandwidth(), codecs, null,
@@ -653,6 +709,9 @@ public class MediaSourceService {
       if (bandwidth == 0) bandwidth = audio ? 160_000 : fallbackBandwidth(candidate.height());
       String raw = rawCodec(node, audio ? "acodec" : "vcodec");
       String codecs = audio ? codecTag(raw, "aac") : videoCodecTag(raw, candidate.videoCodec(), node);
+      LOG.info("event=MEDIA_SOURCE_INDEXED_TRACK format={} container={} codecs={} initBytes={} segments={} indexSeconds={} firstSegmentBytes={}",
+          describe(candidate), container, audio ? codecTag(raw, "aac") : videoCodecTag(raw, candidate.videoCodec(), node),
+          index.initEnd(), index.segments().size(), Math.round(index.duration()), index.segments().getFirst().length());
       IndexedTrack track = new IndexedTrack(id, candidate.id(), url, container,
           audio ? candidate.audioCodec() : candidate.videoCodec(), codecs, audio,
           node.path("width").asInt(0), candidate.height(), node.path("fps").asDouble(0), bandwidth,
@@ -661,7 +720,7 @@ public class MediaSourceService {
       return track;
     } catch (Exception failure) {
       memo.put(candidate.id(), Boolean.FALSE);
-      LOG.warn("event=MEDIA_SOURCE_INDEX_FAILED format={} reason={}", candidate.id(), failure.toString());
+      LOG.warn("event=MEDIA_SOURCE_INDEX_FAILED format={} reason={}", describe(candidate), failure.toString());
       return null;
     }
   }
@@ -669,6 +728,7 @@ public class MediaSourceService {
   /** Reads the beginning of an adaptive file until its MP4 sidx or WebM Cues are complete. */
   AdaptiveIndex.Index fetchIndex(URI url, String container, double duration) throws Exception {
     long want = 64 * 1024;
+    long started = System.nanoTime();
     while (true) {
       HttpRequest request = HttpRequest.newBuilder(url).timeout(Duration.ofSeconds(30))
           .header("Range", "bytes=0-" + (want - 1)).GET().build();
@@ -684,9 +744,12 @@ public class MediaSourceService {
         if (slash >= 0) try { total = Long.parseLong(range.substring(slash + 1).trim()); } catch (NumberFormatException ignored) { }
         if (total < 0 && response.statusCode() == 200) total = response.headers().firstValueAsLong("Content-Length").orElse(-1);
       }
+      LOG.debug("event=MEDIA_SOURCE_INDEX_FETCHED host={} container={} status={} bytes={} totalBytes={} durationMs={}",
+          url.getHost(), container, response.statusCode(), head.length, total, (System.nanoTime() - started) / 1_000_000);
       try {
         return AdaptiveIndex.parse(container, head, total, duration);
       } catch (AdaptiveIndex.NeedMoreBytesException more) {
+        LOG.debug("event=MEDIA_SOURCE_INDEX_NEEDS_MORE container={} have={} need={}", container, head.length, more.required());
         if (head.length < want || more.required() > MAX_INDEX_BYTES)
           throw new IllegalStateException("adaptive index is incomplete or too large");
         want = Math.max(more.required(), want * 2);

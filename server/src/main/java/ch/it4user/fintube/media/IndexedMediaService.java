@@ -50,9 +50,13 @@ public class IndexedMediaService {
     MediaSourceService.IndexedTrack track = track(source, trackId, index);
     String format = cacheFormat(source, trackId);
     String key = index == null ? "init" : "s" + index;
+    long started = System.nanoTime();
+    boolean cached = fragments.isCached(video, format, key);
     Path path = path(video, source, track, format, index, high);
     long bytes = Files.size(path);
     InputStream stream = fragments.openProduced(video, format, key, high, (target, owner) -> path);
+    LOG.debug("event=INDEXED_SEGMENT_READY video={} track={} format={} segment={} container={} bytes={} cached={} durationMs={}",
+        video, trackId, track.formatId(), key, track.container(), bytes, cached, (System.nanoTime() - started) / 1_000_000);
     return new Media(stream, bytes, track.audio() ? "audio/mp4" : "video/mp4");
   }
 
@@ -61,6 +65,54 @@ public class IndexedMediaService {
       throws Exception {
     MediaSourceService.IndexedTrack track = track(source, trackId, index);
     return path(video, source, track, cacheFormat(source, trackId), index, high);
+  }
+
+  /** Media segment {@code index} of a SponsorBlock-edited track (init sections are unchanged). */
+  public Media openEdited(String video, MediaSourceService.Source source, IndexedEdits.Plan plan, String trackId,
+                          int index, boolean high) throws Exception {
+    MediaSourceService.IndexedTrack track = track(source, trackId, null);
+    List<IndexedEdits.Output> outputs = plan.track(trackId);
+    if (outputs == null || index < 0 || index >= outputs.size())
+      throw new IndexOutOfBoundsException("edited segment " + index + " is outside track " + trackId);
+    String format = cacheFormat(source, trackId) + "-" + plan.id();
+    long started = System.nanoTime();
+    boolean cached = fragments.isCached(video, format, "s" + index);
+    Path path = editedPath(video, source, plan, track, outputs.get(index), index, format, high);
+    long bytes = Files.size(path);
+    LOG.debug("event=INDEXED_EDITED_SEGMENT_READY video={} track={} plan={} segment={} sources={} bytes={} cached={} durationMs={}",
+        video, trackId, plan.id(), index, outputs.get(index).sources(), bytes, cached, (System.nanoTime() - started) / 1_000_000);
+    InputStream stream = fragments.openProduced(video, format, "s" + index, high, (target, owner) -> path);
+    return new Media(stream, bytes, track.audio() ? "audio/mp4" : "video/mp4");
+  }
+
+  private Path editedPath(String video, MediaSourceService.Source source, IndexedEdits.Plan plan,
+                          MediaSourceService.IndexedTrack track, IndexedEdits.Output output, int index,
+                          String format, boolean high) throws Exception {
+    String original = cacheFormat(source, track.id());
+    return fragments.produce(video, format, "s" + index, high, (target, owner) -> {
+      byte[] init = Files.readAllBytes(path(video, source, track, original, null, high));
+      Fmp4Samples.Track parameters = Fmp4Samples.track(init);
+      List<Fmp4Samples.Sample> samples = new ArrayList<>();
+      for (int source0 : output.sources()) {
+        Path raw = path(video, source, track, original, source0, high);
+        long absolute = "webm".equals(track.container()) ? 0 : track.segments().get(source0).start();
+        samples.addAll(Fmp4Samples.samples(Files.readAllBytes(raw), absolute, parameters));
+      }
+      if (samples.isEmpty()) throw new IOException("source segment has no samples");
+      List<Fmp4Samples.Sample> kept = IndexedEdits.select(samples, output, track.audio(), parameters.timescale());
+      if (kept.isEmpty()) kept = List.of(samples.getFirst());
+      Fmp4Samples.Sample first = kept.getFirst();
+      // Position from the plan, not from sample timestamps: B-frame and AAC priming
+      // offsets make decode times differ slightly from presentation times.
+      long removed = Math.round(plan.removedBefore(output.keep().getFirst()[0]) * parameters.timescale());
+      Path out = FragmentManager.temporary(target);
+      Files.write(out, Fmp4Samples.write(parameters.trackId(), index + 1, Math.max(0, first.dts() - removed), kept));
+      if (output.truncated())
+        LOG.info("event=SPONSOR_SEGMENT_TRIMMED video={} track={} plan={} segment={} keptSamples={} totalSamples={} keptSeconds={} shiftSeconds={}",
+            video, track.id(), plan.id(), index, kept.size(), samples.size(),
+            String.format(Locale.ROOT, "%.3f", output.seconds()), String.format(Locale.ROOT, "%.3f", removed / (double) parameters.timescale()));
+      return out;
+    });
   }
 
   private Path path(String video, MediaSourceService.Source source, MediaSourceService.IndexedTrack track,
@@ -93,6 +145,7 @@ public class IndexedMediaService {
     Path cluster = FragmentManager.temporary(target);
     Path input = FragmentManager.temporary(target);
     Path output = FragmentManager.temporary(target);
+    long started = System.nanoTime();
     try {
       fragments.download(video, format, "c" + index, track.url(), segment.start(), segment.end(), cluster, high, owner, "cluster");
       try (var out = Files.newOutputStream(input)) {
@@ -106,14 +159,35 @@ public class IndexedMediaService {
           "-fragment_index", Integer.toString(index + 1), output.toString()));
       Fmp4 result = split(Files.readAllBytes(output));
       setDecodeTime(result.media(), Math.round(segment.startSeconds() * WEBM_VIDEO_TIMESCALE));
-      LOG.debug("event=INDEXED_WEBM_SEGMENT_REPACKAGED video={} format={} segment={} bytes={}",
-          video, format, index, result.media().length);
+      LOG.debug("event=INDEXED_WEBM_SEGMENT_REPACKAGED video={} format={} segment={} clusterBytes={} outputBytes={} decodeTimeSeconds={} durationMs={}",
+          video, format, index, segment.length(), result.media().length,
+          String.format(Locale.ROOT, "%.3f", segment.startSeconds()), (System.nanoTime() - started) / 1_000_000);
       return result;
     } finally {
       Files.deleteIfExists(cluster);
       Files.deleteIfExists(input);
       Files.deleteIfExists(output);
     }
+  }
+
+  /**
+   * Moves an fMP4 media segment earlier on the timeline by {@code removedSeconds}
+   * (used after dropped SponsorBlock segments). Samples are copied unchanged.
+   */
+  public static byte[] shiftFmp4(byte[] init, byte[] media, int sequence, double removedSeconds) {
+    Fmp4Samples.Track parameters = Fmp4Samples.track(init);
+    List<Fmp4Samples.Sample> samples = Fmp4Samples.samples(media, 0, parameters);
+    if (samples.isEmpty()) throw new IllegalArgumentException("fragment has no samples");
+    long shift = Math.round(removedSeconds * parameters.timescale());
+    return Fmp4Samples.write(parameters.trackId(), sequence, Math.max(0, samples.getFirst().dts() - shift), samples);
+  }
+
+  /** Moves an MPEG-TS segment earlier by {@code removedSeconds} with a stream copy. */
+  public void shiftTs(Path input, Path output, double removedSeconds) throws Exception {
+    runFfmpeg(List.of(ffmpeg(), "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
+        "-copyts", "-itsoffset", String.format(Locale.ROOT, "%.6f", -removedSeconds), "-i", input.toString(),
+        "-map", "0", "-c", "copy", "-muxdelay", "0", "-muxpreload", "0", "-mpegts_copyts", "1",
+        "-f", "mpegts", output.toString()));
   }
 
   private static MediaSourceService.IndexedTrack track(MediaSourceService.Source source, String trackId, Integer index) {
@@ -241,21 +315,24 @@ public class IndexedMediaService {
       });
       try {
         if (!process.waitFor(FFMPEG_TIMEOUT_SECONDS, TimeUnit.SECONDS))
-          throw new IOException("WebM repackaging timed out");
+          throw new IOException("ffmpeg stream copy timed out");
         if (process.exitValue() != 0)
-          throw new IOException("WebM repackaging failed: " + new String(log.join(), StandardCharsets.UTF_8).strip());
+          throw new IOException("ffmpeg stream copy failed: " + new String(log.join(), StandardCharsets.UTF_8).strip());
       } finally {
         if (process.isAlive()) { process.destroyForcibly(); process.waitFor(5, TimeUnit.SECONDS); }
       }
     } catch (IOException e) {
-      if (e.getMessage() != null && e.getMessage().startsWith("WebM")) throw e;
-      throw new IOException("ffmpeg is unavailable for WebM repackaging: " + e.getMessage(), e);
+      if (e.getMessage() != null && e.getMessage().startsWith("ffmpeg stream copy")) throw e;
+      throw new IOException("ffmpeg is unavailable: " + e.getMessage(), e);
     } finally {
       processes.release();
     }
   }
 
   static String describe(MediaSourceService.IndexedTrack track) {
-    return String.format(Locale.ROOT, "%s:%s:%dx%d", track.formatId(), track.codec(), track.width(), track.height());
+    return track.audio()
+        ? String.format(Locale.ROOT, "%s:%s:%s:%dsegs", track.formatId(), track.codecs(), track.container(), track.segments().size())
+        : String.format(Locale.ROOT, "%s:%s:%dx%d@%.0f:%s:%dsegs", track.formatId(), track.codecs(), track.width(), track.height(),
+            track.fps(), track.container(), track.segments().size());
   }
 }

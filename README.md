@@ -213,7 +213,15 @@ YouTube now publishes most media as single HTTPS files per quality (VP9 in WebM,
 
 **Recommended for "best quality that plays everywhere":** Media quality `2160`, video codecs `vp9,h264`, audio codecs `aac`. In Jellyfin, leave clients on **Auto/Maximum** quality and keep *Allow video playback that requires conversion without re-encoding* enabled. If Jellyfin still transcodes on a device, check its **Dashboard → Activity**: a transcode reason of *VideoCodecNotSupported* means that device cannot play VP9 and should use the H.264 variant (Apple native player does so automatically).
 
-SponsorBlock fragment cuts are currently applied only to H.264 MPEG-TS renditions, not to the fMP4 paths.
+### SponsorBlock
+
+When **Skip SponsorBlock sponsor segments** is enabled, sponsors are removed from the stream itself, so it works in every Jellyfin client without a plugin:
+
+- **Indexed fMP4 streams (the normal path):** the cut starts exactly at the sponsor start (frame accurate for video, AAC-frame accurate for audio). Video can only resume on a keyframe, so playback continues at the last keyframe at or before the sponsor end that all video variants share; at most one segment (about 5 s) of the sponsor can remain, but content is never skipped. Sponsors that contain no shared keyframe are left in. Nothing is re-encoded: sample payloads are copied and only timestamps are rewritten.
+- **YouTube HLS fMP4 and H.264 MPEG-TS streams:** whole segments that lie completely inside a sponsor are removed.
+- **Single-file fallbacks** (only used when YouTube offers nothing segmented) cannot be cut.
+
+The reported runtime in Jellyfin reflects the shortened video. Each cut set gets its own playlist URL, so a SponsorBlock update never changes a session that is already playing.
 
 ## Secure remote access
 
@@ -266,6 +274,30 @@ Encrypted credentials can only be restored with the same settings key. If you se
 - Confirm Jellyfin can read the matching `/data/users/<user>` directory.
 - Keep the PO-token provider enabled and inspect `docker compose logs fintube pot-provider`.
 - Confirm the user's YouTube Data API key is configured in **Account**.
+
+### Reading the playback logs
+
+Every playback decision is logged with an `event=` key; follow them with `docker compose logs -f fintube | grep event=`. The most useful ones, in order:
+
+| Event | What it tells you |
+| --- | --- |
+| `PLAYBACK_MANIFEST_REQUESTED` | Who asked (`client` = User-Agent): a player's own UA means direct play, `Lavf/…` means Jellyfin's ffmpeg is probing, remuxing or transcoding. Also the user's quality and codec list. |
+| `MEDIA_SOURCE_SELECTION_STARTED` | Formats YouTube offered, how many were rejected and why, and the best height per codec and protocol. |
+| `MEDIA_SOURCE_INDEXED_TRACK` / `MEDIA_SOURCE_INDEX_FAILED` | Each HTTPS file that was (or could not be) indexed. |
+| `MEDIA_SOURCE_INDEXED_SELECTED` | The chosen video, audio and H.264 compatibility variant (`compatReason` explains a missing one). |
+| `MEDIA_SOURCE_HLS_SELECTED`, `MEDIA_SOURCE_SINGLE_SEGMENT_FALLBACK`, `MEDIA_SOURCE_LOW_COMPATIBILITY_FALLBACK` | The older or last-resort paths were used instead. |
+| `SPONSOR_SEGMENTS_LOADED`, `SPONSOR_INDEXED_CUT_PLANNED` / `…_RETAINED`, `SPONSOR_INDEXED_PLAN_READY` | SponsorBlock data, each cut (including how much sponsor is left) and why a sponsor was kept. |
+| `PLAYBACK_INDEXED_TRACK_REQUESTED` | Which variant the player actually picked (`v0` = H.264, `v1` = VP9/AV1) and which client asked. |
+| `PLAYBACK_INDEXED_SEGMENT_SLOW` | A segment took more than 3 s to deliver. |
+| `MEDIA_FILE_DOWNLOAD_STARTED`, `MEDIA_FILE_STREAMS` | Downloads: the yt-dlp format selector used, the resulting codecs and whether anything is re-encoded. |
+
+For per-format and per-segment detail (every rejected format and the reason, candidate order, index requests, segment timings, WebM repackaging), enable debug logging for FinTube's own classes by adding this to the `fintube` service's `environment` and restarting:
+
+```yaml
+LOGGING_LEVEL_CH_IT4USER_FINTUBE: DEBUG
+```
+
+Debug output is verbose during playback (several lines per segment); remove it again once you have what you need.
 
 ### iPad playback causes high CPU usage
 
