@@ -89,7 +89,7 @@ public class PlaybackService {
                     preferences == null ? "global" : preferences.getPreferredVideoCodecs(),
                     preferences == null ? "global" : preferences.getPreferredAudioCodecs());
             var source = source(video, preferences);
-            LOG.info("event=PLAYBACK_SOURCE_RESOLVED video={} format={} codecs={} resolution={}x{} durationMs={}",
+            LOG.debug("event=PLAYBACK_SOURCE_RESOLVED video={} format={} codecs={} resolution={}x{} durationMs={}",
                     video, source.format(), source.codecs(), source.width(), source.height(), (System.nanoTime() - started) / 1_000_000);
             if (source.indexed()) {
                 IndexedEdits.Plan plan = sponsorPlan(video, source);
@@ -190,7 +190,7 @@ public class PlaybackService {
         try {
             var sponsors = sponsorBlock.skipSegments(video).stream()
                     .map(segment -> new IndexedEdits.Sponsor(segment.startSeconds(), segment.endSeconds())).toList();
-            LOG.info("event=SPONSOR_SEGMENTS_LOADED video={} sponsors={}", video, sponsors.stream()
+            if (!sponsors.isEmpty()) LOG.info("event=SPONSOR_SEGMENTS_LOADED video={} sponsors={}", video, sponsors.stream()
                     .map(s -> String.format(java.util.Locale.ROOT, "%.2f-%.2f", s.start(), s.end())).toList());
             IndexedEdits.Plan plan = IndexedEdits.plan(source, sponsors);
             if (plan == null && !sponsors.isEmpty())

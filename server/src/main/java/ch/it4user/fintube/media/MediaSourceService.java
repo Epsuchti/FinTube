@@ -304,7 +304,7 @@ public class MediaSourceService {
   }
 
   private Source probe(String video, MediaPreferences preferences, String reason) throws Exception {
-    LOG.info("event=MEDIA_SOURCE_REFRESH_STARTED video={} reason={}", video, reason);
+    LOG.debug("event=MEDIA_SOURCE_REFRESH_STARTED video={} reason={}", video, reason);
     var settings = settingsService.values(false);
     String bin = settings.getOrDefault("yt_dlp_path", "yt-dlp");
     List<String> command = new ArrayList<>(List.of(bin, "-J", "--no-playlist"));

@@ -288,7 +288,7 @@ Every playback decision is logged with an `event=` key; follow them with `docker
 | `MEDIA_SOURCE_HLS_SELECTED`, `MEDIA_SOURCE_SINGLE_SEGMENT_FALLBACK`, `MEDIA_SOURCE_LOW_COMPATIBILITY_FALLBACK` | The older or last-resort paths were used instead. |
 | `SPONSOR_SEGMENTS_LOADED`, `SPONSOR_INDEXED_CUT_PLANNED` / `…_RETAINED`, `SPONSOR_INDEXED_PLAN_READY` | SponsorBlock data, each cut (including how much sponsor is left) and why a sponsor was kept. |
 | `PLAYBACK_INDEXED_TRACK_REQUESTED` | Which variant the player actually picked (`v0` = H.264, `v1` = VP9/AV1) and which client asked. |
-| `PLAYBACK_INDEXED_SEGMENT_SLOW` | A segment took more than 3 s to deliver. |
+| `PLAYBACK_INDEXED_SEGMENT_SLOW`, `MEDIA_FRAGMENT_DOWNLOAD_SLOW` | A segment took more than 3 s to deliver or to download from YouTube. Normal per-segment downloads are only logged at debug level. |
 | `MEDIA_FILE_DOWNLOAD_STARTED`, `MEDIA_FILE_STREAMS` | Downloads: the yt-dlp format selector used, the resulting codecs and whether anything is re-encoded. |
 
 For per-format and per-segment detail (every rejected format and the reason, candidate order, index requests, segment timings, WebM repackaging), enable debug logging for FinTube's own classes by adding this to the `fintube` service's `environment` and restarting:

@@ -108,7 +108,7 @@ public class IndexedMediaService {
       Path out = FragmentManager.temporary(target);
       Files.write(out, Fmp4Samples.write(parameters.trackId(), index + 1, Math.max(0, first.dts() - removed), kept));
       if (output.truncated())
-        LOG.info("event=SPONSOR_SEGMENT_TRIMMED video={} track={} plan={} segment={} keptSamples={} totalSamples={} keptSeconds={} shiftSeconds={}",
+        LOG.debug("event=SPONSOR_SEGMENT_TRIMMED video={} track={} plan={} segment={} keptSamples={} totalSamples={} keptSeconds={} shiftSeconds={}",
             video, track.id(), plan.id(), index, kept.size(), samples.size(),
             String.format(Locale.ROOT, "%.3f", output.seconds()), String.format(Locale.ROOT, "%.3f", removed / (double) parameters.timescale()));
       return out;
@@ -147,10 +147,13 @@ public class IndexedMediaService {
     Path output = FragmentManager.temporary(target);
     long started = System.nanoTime();
     try {
-      fragments.download(video, format, "c" + index, track.url(), segment.start(), segment.end(), cluster, high, owner, "cluster");
+      // Cluster 0 feeds both the init section and segment 0: cache it so it is fetched once.
+      Path clusterSource = cluster;
+      if (index == 0) clusterSource = fragments.getRange(video, format, "c0", track.url(), segment.start(), segment.end(), high);
+      else fragments.download(video, format, "c" + index, track.url(), segment.start(), segment.end(), cluster, high, owner, "cluster");
       try (var out = Files.newOutputStream(input)) {
         out.write(unknownSizeSegment(Files.readAllBytes(header)));
-        Files.copy(cluster, out);
+        Files.copy(clusterSource, out);
       }
       runFfmpeg(List.of(ffmpeg(), "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
           "-i", input.toString(), "-map", "0:v:0", "-c", "copy", "-f", "mp4",

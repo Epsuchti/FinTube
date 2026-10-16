@@ -40,6 +40,7 @@ import org.slf4j.LoggerFactory;
 public class FragmentManager {
   private static final Logger LOG = LoggerFactory.getLogger(FragmentManager.class);
   private static final long REMUX_TIMEOUT_SECONDS = 120;
+  private static final long SLOW_DOWNLOAD_MS = 3_000;
   private static final int MAX_PROCESS_DIAGNOSTIC_BYTES = 16 * 1024;
   /** Coordinates lease acquisition with maintenance's check-and-unlink step. */
   public static final Object EVICTION_LOCK = new Object();
@@ -324,7 +325,7 @@ public class FragmentManager {
     boolean ranged = rangeStart >= 0;
     if (ranged && rangeEnd <= rangeStart) throw new IllegalArgumentException("empty byte range");
     long downloadStarted = System.nanoTime();
-    LOG.info("event=MEDIA_FRAGMENT_DOWNLOAD_STARTED video={} format={} fragment={} track={} priority={} attempt={} source={} range={}",
+    LOG.debug("event=MEDIA_FRAGMENT_DOWNLOAD_STARTED video={} format={} fragment={} track={} priority={} attempt={} source={} range={}",
         video, format, fragment, track, priority(high), attempt, sourceEndpoint(source),
         ranged ? rangeStart + "-" + (rangeEnd - 1) : "all");
     HttpRequest.Builder builder = HttpRequest.newBuilder(source).GET();
@@ -369,7 +370,11 @@ public class FragmentManager {
       throw new IOException("empty upstream fragment");
     if (ranged && bytes != limit)
       throw new IOException("short upstream range: expected " + limit + " bytes, received " + bytes);
-    LOG.info("event=MEDIA_FRAGMENT_DOWNLOAD_SUCCEEDED video={} format={} fragment={} track={} priority={} attempt={} statusCode={} bytes={} durationMs={}",
+    long elapsedMs = (System.nanoTime() - downloadStarted) / 1_000_000;
+    // Per-segment success is debug detail; only slow transfers are worth an INFO line.
+    if (elapsedMs >= SLOW_DOWNLOAD_MS) LOG.info("event=MEDIA_FRAGMENT_DOWNLOAD_SLOW video={} format={} fragment={} track={} priority={} attempt={} statusCode={} bytes={} durationMs={}",
+        video, format, fragment, track, priority(high), attempt, response.statusCode(), bytes, elapsedMs);
+    else LOG.debug("event=MEDIA_FRAGMENT_DOWNLOAD_SUCCEEDED video={} format={} fragment={} track={} priority={} attempt={} statusCode={} bytes={} durationMs={}",
         video, format, fragment, track, priority(high), attempt, response.statusCode(), bytes,
         (System.nanoTime() - downloadStarted) / 1_000_000);
   }
@@ -399,7 +404,7 @@ public class FragmentManager {
 
   private Path remux(Path video, Path audio, Path output, double expectedStart) throws Exception {
     String ffmpeg = setting("ffmpeg_path", "ffmpeg");
-    LOG.info("event=MEDIA_FRAGMENT_REMUX_STARTED expectedStartSeconds={} ffmpeg={}", expectedStart, ffmpeg);
+    LOG.debug("event=MEDIA_FRAGMENT_REMUX_STARTED expectedStartSeconds={} ffmpeg={}", expectedStart, ffmpeg);
     Double videoStart = streamStart(video, ffmpeg);
     Double audioStart = streamStart(audio, ffmpeg);
     var command = new java.util.ArrayList<String>();
@@ -433,7 +438,7 @@ public class FragmentManager {
         process.waitFor(5, TimeUnit.SECONDS);
       }
     }
-    LOG.info("event=MEDIA_FRAGMENT_REMUX_SUCCEEDED bytes={} expectedStartSeconds={}", Files.size(output), expectedStart);
+    LOG.debug("event=MEDIA_FRAGMENT_REMUX_SUCCEEDED bytes={} expectedStartSeconds={}", Files.size(output), expectedStart);
     return output;
   }
 
