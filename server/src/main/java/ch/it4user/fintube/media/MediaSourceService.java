@@ -41,14 +41,17 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Resolves one deterministic representation for a video and persists the result.
- * A progressive representation is preferred; otherwise the best compatible
- * DASH video and audio tracks are paired for stream-copy remuxing.
+ * The best compatible fragmented or adaptive representation is preferred;
+ * progressive media is retained only as a playback compatibility fallback.
  */
 @Service
 public class MediaSourceService {
   private static final String DEFAULT_PO_TOKEN_PROVIDER_ARGS = "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416";
   private static final String REMUX_FORMAT_VERSION = "-tsv6";
   private static final String FMP4_FORMAT_VERSION = "-fmp4v1";
+  // Included in persisted source policy so a selector change invalidates
+  // existing, still-unexpired low-quality selections after deployment.
+  private static final String SELECTOR_POLICY_VERSION = "selector-v2";
   private static final double TIMELINE_TOLERANCE_SECONDS = 0.250d;
   private static final Duration PROBE_TIMEOUT = Duration.ofMinutes(2);
   private static final Logger LOG = LoggerFactory.getLogger(MediaSourceService.class);
@@ -429,15 +432,11 @@ public class MediaSourceService {
         if (seekable(audio) && matchingTimelines(video, audio)) return makeSource(root, video, audio, false, preferences);
       }
     }
-    // Some authenticated YouTube player responses expose only a complete
-    // progressive file. It cannot provide fragment-level seeking, but it is
-    // still a playable last resort: the rendition service materializes it as
-    // one VOD segment instead of rejecting an otherwise usable video.
-    Candidate progressive = all.stream().filter(Candidate::progressive)
-        .filter(this::directPlayable).sorted(videoOrder).findFirst().orElse(null);
-    if (progressive != null) return makeSource(root, progressive, null, true, preferences);
     // The web player can also expose separate HTTP video and AAC audio URLs
     // without a DASH fragment list. Remux that pair as a single VOD segment.
+    // Prefer this pair over a low-resolution progressive compatibility stream:
+    // YouTube commonly includes format 18 (360p) even when it also exposes a
+    // much higher quality adaptive video and audio pair.
     List<Candidate> completeVideos = all.stream().filter(Candidate::hasVideo)
         .filter(this::directPlayable).filter(c -> parts(c.node()).isEmpty()).sorted(videoOrder).toList();
     List<Candidate> completeAudios = all.stream().filter(c -> c.hasAudio() && !c.hasVideo())
@@ -448,6 +447,17 @@ public class MediaSourceService {
             .thenComparing(Comparator.comparingDouble(Candidate::bitrate).reversed())).toList();
     if (!completeVideos.isEmpty() && !completeAudios.isEmpty())
       return makeSource(root, completeVideos.getFirst(), completeAudios.getFirst(), false, preferences);
+    // Some authenticated YouTube player responses expose only a complete
+    // progressive file. It cannot provide fragment-level seeking, but it is
+    // still a playable last resort: the rendition service materializes it as
+    // one VOD segment instead of rejecting an otherwise usable video.
+    Candidate progressive = all.stream().filter(Candidate::progressive)
+        .filter(this::directPlayable).sorted(videoOrder).findFirst().orElse(null);
+    if (progressive != null) {
+      LOG.warn("event=MEDIA_SOURCE_LOW_COMPATIBILITY_FALLBACK format={} height={} bitrateKbps={} reason=no_adaptive_source",
+          progressive.id(), progressive.height(), progressive.bitrate());
+      return makeSource(root, progressive, null, true, preferences);
+    }
     throw new IllegalStateException("no seekable fragmented representation available");
   }
 
@@ -598,7 +608,8 @@ public class MediaSourceService {
   }
 
   private String policyKey(MediaPreferences preferences) {
-    return String.join("|", preference(preferences == null || preferences.getQuality() == null ? null : preferences.getQuality().getValue(), "stream_quality", "1080"),
+    return String.join("|", SELECTOR_POLICY_VERSION,
+        preference(preferences == null || preferences.getQuality() == null ? null : preferences.getQuality().getValue(), "stream_quality", "1080"),
         preference(preferences == null ? null : preferences.getPreferredVideoCodecs(), "preferred_video_codecs", "h264,vp9,av1"),
         preference(preferences == null ? null : preferences.getPreferredAudioCodecs(), "preferred_audio_codecs", "aac,opus"),
         setting("allowed_video_codecs", ""), setting("allowed_audio_codecs", ""));

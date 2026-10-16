@@ -267,6 +267,24 @@ class FragmentManagerTest {
   }
 
   @Test
+  void sourceSelectorPrefersHigherQualityUnfragmentedPairOverProgressiveCompatibilityStream() throws Exception {
+    MediaSourceService service = new MediaSourceService(settings, mediaSources);
+    when(settings.value("stream_quality")).thenReturn("1080");
+    var root = new ObjectMapper().readTree("""
+        {"duration":120,"formats":[
+          {"format_id":"18","width":640,"height":360,"vcodec":"avc1.42001E","acodec":"mp4a.40.2","ext":"mp4","url":"http://progressive/360"},
+          {"format_id":"137","width":1920,"height":1080,"vcodec":"avc1.640028","acodec":"none","ext":"mp4","url":"http://video/1080"},
+          {"format_id":"140","vcodec":"none","acodec":"mp4a.40.2","ext":"m4a","url":"http://audio"}
+        ]} """);
+
+    MediaSourceService.Source selected = service.select(root);
+
+    assertEquals("137+140-tsv6", selected.format());
+    assertFalse(selected.progressive());
+    assertEquals(1080, selected.height());
+  }
+
+  @Test
   void sourceSelectorParsesHlsMediaPlaylists() throws Exception {
     MediaSourceService service = new MediaSourceService(settings, mediaSources);
     String base = "http://127.0.0.1:" + server.getAddress().getPort();
@@ -361,7 +379,7 @@ class FragmentManagerTest {
   @Test
   void persistedSourceSurvivesServiceRecreation() throws Exception {
     String json = """
-        {"format":"137","videoFormat":"137","duration":12,"targetDuration":6,"videoCodec":"h264","audioCodec":"aac","container":"mp4","progressive":true,"bandwidth":8000000,"codecs":"avc1.640028,mp4a.40.2","selectionPolicy":"720|h264,vp9|aac,opus||",
+        {"format":"137","videoFormat":"137","duration":12,"targetDuration":6,"videoCodec":"h264","audioCodec":"aac","container":"mp4","progressive":true,"bandwidth":8000000,"codecs":"avc1.640028,mp4a.40.2","selectionPolicy":"selector-v2|720|h264,vp9|aac,opus||",
          "fragments":[{"id":"v0","url":"http://persisted/0","seconds":6},{"id":"v1","url":"http://persisted/1","seconds":6}]}""";
     mediaSources.save(new MediaSourceEntity("VIDEO1", "137", json, 12, null, java.time.Instant.now().toString()));
     MediaSourceService.Source loaded = new MediaSourceService(settings, mediaSources).source("VIDEO1");
