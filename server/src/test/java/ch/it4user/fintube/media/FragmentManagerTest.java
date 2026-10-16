@@ -231,6 +231,42 @@ class FragmentManagerTest {
   }
 
   @Test
+  void sourceSelectorFallsBackToACompleteProgressiveFile() throws Exception {
+    MediaSourceService service = new MediaSourceService(settings, mediaSources);
+    when(settings.value("stream_quality")).thenReturn("1080");
+    var root = new ObjectMapper().readTree("""
+        {"duration":120,"formats":[
+          {"format_id":"22","width":1280,"height":720,"vcodec":"avc1.64001f","acodec":"mp4a.40.2","ext":"mp4","url":"http://progressive"}
+        ]} """);
+
+    MediaSourceService.Source selected = service.select(root);
+
+    assertEquals("22", selected.format());
+    assertTrue(selected.progressive());
+    assertEquals(1, selected.fragments().size());
+    assertEquals("http://progressive", selected.fragments().getFirst().url().toString());
+    assertEquals(120d, selected.fragments().getFirst().seconds());
+  }
+
+  @Test
+  void sourceSelectorFallsBackToAnUnfragmentedAdaptivePair() throws Exception {
+    MediaSourceService service = new MediaSourceService(settings, mediaSources);
+    var root = new ObjectMapper().readTree("""
+        {"duration":120,"formats":[
+          {"format_id":"136","width":1280,"height":720,"vcodec":"avc1.4d401f","acodec":"none","ext":"mp4","url":"http://video"},
+          {"format_id":"140","vcodec":"none","acodec":"mp4a.40.2","ext":"m4a","url":"http://audio"}
+        ]} """);
+
+    MediaSourceService.Source selected = service.select(root);
+
+    assertEquals("136+140-tsv6", selected.format());
+    assertFalse(selected.progressive());
+    assertEquals(1, selected.fragments().size());
+    assertEquals("http://video", selected.fragments().getFirst().url().toString());
+    assertEquals("http://audio", selected.fragments().getFirst().audioUrl().toString());
+  }
+
+  @Test
   void sourceSelectorParsesHlsMediaPlaylists() throws Exception {
     MediaSourceService service = new MediaSourceService(settings, mediaSources);
     String base = "http://127.0.0.1:" + server.getAddress().getPort();

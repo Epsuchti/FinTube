@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.FilterInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -26,6 +27,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,6 +39,8 @@ import org.slf4j.LoggerFactory;
 @Service
 public class FragmentManager {
   private static final Logger LOG = LoggerFactory.getLogger(FragmentManager.class);
+  private static final long REMUX_TIMEOUT_SECONDS = 120;
+  private static final int MAX_PROCESS_DIAGNOSTIC_BYTES = 16 * 1024;
   /** Coordinates lease acquisition with maintenance's check-and-unlink step. */
   public static final Object EVICTION_LOCK = new Object();
   final ApplicationPaths paths;
@@ -359,9 +363,22 @@ public class FragmentManager {
       throw new IOException("ffmpeg executable is unavailable: " + ffmpeg
           + ". Install ffmpeg or set the ffmpeg_path setting to its absolute path.", e);
     }
-    byte[] outputLog = process.getInputStream().readAllBytes();
-    if (process.waitFor() != 0 || !Files.isRegularFile(output) || Files.size(output) == 0)
-      throw new IOException("stream-copy remux failed" + (outputLog.length == 0 ? "" : ": " + new String(outputLog)));
+    CompletableFuture<byte[]> outputLog = CompletableFuture.supplyAsync(() -> readDiagnostic(process.getInputStream()));
+    try {
+      if (!process.waitFor(REMUX_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+        process.destroyForcibly();
+        process.waitFor(5, TimeUnit.SECONDS);
+        throw new IOException("stream-copy remux timed out after " + REMUX_TIMEOUT_SECONDS + " seconds");
+      }
+      byte[] detail = outputLog.join();
+      if (process.exitValue() != 0 || !Files.isRegularFile(output) || Files.size(output) == 0)
+        throw new IOException("stream-copy remux failed" + (detail.length == 0 ? "" : ": " + new String(detail, StandardCharsets.UTF_8)));
+    } finally {
+      if (process.isAlive()) {
+        process.destroyForcibly();
+        process.waitFor(5, TimeUnit.SECONDS);
+      }
+    }
     LOG.info("event=MEDIA_FRAGMENT_REMUX_SUCCEEDED bytes={} expectedStartSeconds={}", Files.size(output), expectedStart);
     return output;
   }
@@ -409,6 +426,21 @@ public class FragmentManager {
       return parent == null ? "ffprobe" : parent.resolve("ffprobe").toString();
     }
     return "ffprobe";
+  }
+
+  /** Drain process output completely while retaining only a safe diagnostic prefix. */
+  private static byte[] readDiagnostic(InputStream stream) {
+    try (stream; ByteArrayOutputStream captured = new ByteArrayOutputStream()) {
+      byte[] buffer = new byte[4096];
+      int read;
+      while ((read = stream.read(buffer)) != -1) {
+        int remaining = MAX_PROCESS_DIAGNOSTIC_BYTES - captured.size();
+        if (remaining > 0) captured.write(buffer, 0, Math.min(read, remaining));
+      }
+      return captured.toByteArray();
+    } catch (IOException failure) {
+      throw new java.io.UncheckedIOException(failure);
+    }
   }
 
   private void upsert(String video, String format, String fragment, Path path) throws IOException {

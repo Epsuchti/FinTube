@@ -33,6 +33,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
@@ -49,6 +50,7 @@ public class MediaSourceService {
   private static final String REMUX_FORMAT_VERSION = "-tsv6";
   private static final String FMP4_FORMAT_VERSION = "-fmp4v1";
   private static final double TIMELINE_TOLERANCE_SECONDS = 0.250d;
+  private static final Duration PROBE_TIMEOUT = Duration.ofMinutes(2);
   private static final Logger LOG = LoggerFactory.getLogger(MediaSourceService.class);
   private static final Pattern EXPIRE = Pattern.compile("(?:^|[?&])expire=(\\d+)|/expire/(\\d+)");
   private final SettingsService settingsService;
@@ -294,7 +296,17 @@ public class MediaSourceService {
     Process process = startProbe(command, bin);
     CompletableFuture<byte[]> stdout = CompletableFuture.supplyAsync(() -> read(process.getInputStream()));
     CompletableFuture<byte[]> stderr = CompletableFuture.supplyAsync(() -> read(process.getErrorStream()));
-    int exitCode = process.waitFor();
+    if (!process.waitFor(PROBE_TIMEOUT.toSeconds(), TimeUnit.SECONDS)) {
+      process.destroyForcibly();
+      process.waitFor(5, TimeUnit.SECONDS);
+      byte[] output = stdout.join();
+      byte[] error = stderr.join();
+      long durationMs = (System.nanoTime() - started) / 1_000_000;
+      LOG.warn("event=YTDLP_PROBE_TIMED_OUT video={} reason={} durationMs={} stdoutBytes={} stderr={}",
+          video, reason, durationMs, output.length, probeError(error));
+      throw new IllegalStateException("yt-dlp probe timed out after " + PROBE_TIMEOUT.toSeconds() + " seconds");
+    }
+    int exitCode = process.exitValue();
     byte[] output = stdout.join();
     byte[] error = stderr.join();
     long durationMs = (System.nanoTime() - started) / 1_000_000;
@@ -417,6 +429,25 @@ public class MediaSourceService {
         if (seekable(audio) && matchingTimelines(video, audio)) return makeSource(root, video, audio, false, preferences);
       }
     }
+    // Some authenticated YouTube player responses expose only a complete
+    // progressive file. It cannot provide fragment-level seeking, but it is
+    // still a playable last resort: the rendition service materializes it as
+    // one VOD segment instead of rejecting an otherwise usable video.
+    Candidate progressive = all.stream().filter(Candidate::progressive)
+        .filter(this::directPlayable).sorted(videoOrder).findFirst().orElse(null);
+    if (progressive != null) return makeSource(root, progressive, null, true, preferences);
+    // The web player can also expose separate HTTP video and AAC audio URLs
+    // without a DASH fragment list. Remux that pair as a single VOD segment.
+    List<Candidate> completeVideos = all.stream().filter(Candidate::hasVideo)
+        .filter(this::directPlayable).filter(c -> parts(c.node()).isEmpty()).sorted(videoOrder).toList();
+    List<Candidate> completeAudios = all.stream().filter(c -> c.hasAudio() && !c.hasVideo())
+        .filter(c -> "aac".equals(c.audioCodec())).filter(this::directPlayable).filter(c -> parts(c.node()).isEmpty())
+        .sorted(Comparator.comparingInt(Candidate::codecRank).reversed()
+            .thenComparing(Comparator.comparingInt(MediaSourceService::audioLanguageRank).reversed())
+            .thenComparing(Comparator.comparingInt(MediaSourceService::aacProfileRank).reversed())
+            .thenComparing(Comparator.comparingDouble(Candidate::bitrate).reversed())).toList();
+    if (!completeVideos.isEmpty() && !completeAudios.isEmpty())
+      return makeSource(root, completeVideos.getFirst(), completeAudios.getFirst(), false, preferences);
     throw new IllegalStateException("no seekable fragmented representation available");
   }
 
@@ -478,9 +509,10 @@ public class MediaSourceService {
     String format = progressive ? video.id() : video.id() + "+" + audio.id()
         + (videoInit == null ? REMUX_FORMAT_VERSION : FMP4_FORMAT_VERSION);
     List<JsonNode> videoParts = parts(video.node());
+    if (videoParts.isEmpty()) videoParts = List.of(video.node());
     List<JsonNode> audioParts = audio == null ? List.of() : parts(audio.node());
     int count = videoParts.size();
-    if (count < 2) throw new IllegalStateException("source has no segment timeline; refusing non-seekable fallback");
+    if (count == 0) throw new IllegalStateException("selected source has no downloadable media");
     List<Fragment> fragments = new ArrayList<>(count);
     double total = root.path("duration").asDouble(0);
     double position = 0d;
