@@ -184,12 +184,13 @@ The defaults are conservative and suitable for most installations:
 | Setting | Recommended starting value | Notes |
 | --- | --- | --- |
 | Personal media quality | `1080p` | Each user chooses it in Account settings; choose up to `2160p` after confirming client codec support, bandwidth, and cache capacity. |
-| Preferred video codecs | `h264,vp9,av1` | Per-user order used when choosing a source. |
-| Preferred audio codecs | `aac,opus` | Per-user order used when choosing an audio track. |
+| Preferred video codecs | `h264,vp9,av1` | Per-user list of **allowed** video codecs; the order breaks ties at the same resolution. Codecs not listed are never selected. For best quality on mixed devices use `vp9,h264`. |
+| Preferred audio codecs | `aac,opus` | Streams always use AAC (`140`, AAC-LC 128 kb/s) because every Jellyfin client can play it; Opus is only used by downloads, which convert it to AAC. |
 | Cache retention | `30 days` | Old inactive fragments are removed automatically. |
 | Minimum free cache space | `20 GB` | Increase this on a large shared server. |
 | Default videos to import | `20` | Imports metadata, not full media downloads. |
-| Videos to download | `0` | When set per channel, FinTube downloads local media files (preferably MP4) into that user's Jellyfin folder; completed files play without FinTube streaming. |
+| Videos to download | `0` | When set per channel, FinTube downloads local MP4 files into that user's Jellyfin folder, using the user's quality and codec list (for example VP9 + AAC). Only codecs outside the list are re-encoded to H.264; completed files play without FinTube streaming. |
+| H.264 compatibility variant (`playback_compat_variant`) | Enabled | Adds an H.264 ≤1080p variant next to a VP9/AV1 stream so devices without VP9 still direct-play. |
 | Subscription sync interval | `60 minutes` | A good balance between freshness and API usage. |
 | PO token provider | Enabled | Recommended; leave the manual PO-token field empty. |
 | Jellyfin automatic refresh | Enabled | Makes newly generated items appear automatically. |
@@ -199,7 +200,20 @@ The defaults are conservative and suitable for most installations:
 
 Also set Jellyfin clients to a **Direct Play-friendly** or **Maximum** quality. FinTube chooses a YouTube source for each user's Account media preferences; Jellyfin's bitrate selector does not change that source.
 
-FinTube defaults to H.264, VP9, then AV1 video and AAC, then Opus audio at 1080p. When a higher personal setting selects YouTube's VP9/AV1 fMP4 HLS source, FinTube proxies the original video and AAC-LC audio as separate HLS tracks without video encoding. This requires the Jellyfin client to accept that 4K codec and fMP4 HLS; set Media quality back to 1080p if it does not. SponsorBlock fragment cuts are currently applied only to MPEG-TS renditions, not the fMP4 path.
+FinTube defaults to H.264, VP9, then AV1 video and AAC audio at 1080p.
+
+### How streaming works
+
+YouTube now publishes most media as single HTTPS files per quality (VP9 in WebM, H.264/AV1 in MP4, AAC in M4A); the old HLS formats are only intermittently available. FinTube reads the index at the start of each file (MP4 `sidx`, WebM `Cues`) and serves it to Jellyfin as fMP4 HLS with separate video and audio tracks:
+
+- Playback starts after the first ~5-second segment and seeking fetches only the needed segment.
+- H.264, AV1 and AAC segments are the original bytes. VP9 segments are stream-copied from WebM into fMP4 (no decoding or encoding, a few milliseconds of CPU per segment).
+- Audio is always AAC-LC, so no client needs an audio transcode.
+- When the selected video is VP9 or AV1, the playlist also offers H.264 (up to 1080p) as a first, compatible variant. Each player then picks the best variant it can decode: Android/Google TV/Fire TV, Chrome-based and recent smart TVs use VP9 up to 4K; Apple's native player (iPhone, iPad, Apple TV) uses H.264. Disable this with `playback_compat_variant=false` if you only want the VP9 stream.
+
+**Recommended for "best quality that plays everywhere":** Media quality `2160`, video codecs `vp9,h264`, audio codecs `aac`. In Jellyfin, leave clients on **Auto/Maximum** quality and keep *Allow video playback that requires conversion without re-encoding* enabled. If Jellyfin still transcodes on a device, check its **Dashboard → Activity**: a transcode reason of *VideoCodecNotSupported* means that device cannot play VP9 and should use the H.264 variant (Apple native player does so automatically).
+
+SponsorBlock fragment cuts are currently applied only to H.264 MPEG-TS renditions, not to the fMP4 paths.
 
 ## Secure remote access
 

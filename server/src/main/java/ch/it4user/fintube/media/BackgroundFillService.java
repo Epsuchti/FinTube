@@ -28,9 +28,14 @@ public class BackgroundFillService {
   final ConcurrentHashMap<String, String> queued = new ConcurrentHashMap<>();
   final ConcurrentHashMap<String, Future<?>> running = new ConcurrentHashMap<>();
 
+  private IndexedMediaService indexed;
+
   public BackgroundFillService(JobRepository j, MediaSourceService s, FragmentManager f) {
     jobs = j; sources = s; fragments = f;
   }
+
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  void setIndexedMediaService(IndexedMediaService indexed) { this.indexed = indexed; }
 
   /** Requeue interrupted jobs after process restart. */
   @PostConstruct
@@ -108,6 +113,10 @@ public class BackgroundFillService {
       MediaSourceService.Source source = sources.source(video);
       LOG.info("event=BACKGROUND_FILL_SOURCE_RESOLVED video={} jobId={} format={} fragments={} durationSeconds={} expiresAt={}",
           video, id, source.format(), source.fragments().size(), source.duration(), source.expiresAt());
+      if (source.indexed()) {
+        fillIndexed(video, id, source);
+        return;
+      }
       if (source.fmp4()) {
         fillFmp4(video, id, source);
         return;
@@ -160,6 +169,36 @@ public class BackgroundFillService {
       queued.remove(video, id); running.remove(id);
       LOG.debug("event=BACKGROUND_FILL_SLOT_RELEASED video={} jobId={}", video, id);
     }
+  }
+
+  /** Prefetch the highest video variant and the AAC track of an indexed source. */
+  private void fillIndexed(String video, String id, MediaSourceService.Source source) throws Exception {
+    if (indexed == null) throw new IllegalStateException("indexed media service is unavailable");
+    var videoTrack = source.videoTracks().stream()
+        .max(java.util.Comparator.comparingInt(MediaSourceService.IndexedTrack::height)).orElseThrow();
+    var audioTrack = source.audioTrack();
+    int total = videoTrack.segments().size() + audioTrack.segments().size() + 2;
+    int completed = 0;
+    update(id, "RUNNING", null, 0, total);
+    for (var track : List.of(videoTrack, audioTrack)) {
+      for (int index = -1; index < track.segments().size(); index++) {
+        if (cancelled(id)) return;
+        Integer segment = index < 0 ? null : index;
+        try {
+          indexed.get(video, source, track.id(), segment, false);
+        } catch (FragmentManager.ExpiredSourceException expired) {
+          var fresh = sources.refresh(video, "background_indexed_source_expired");
+          if (!fresh.format().equals(source.format()) || fresh.track(track.id()) == null
+              || !fresh.track(track.id()).segments().equals(track.segments()))
+            throw new IllegalStateException("indexed source changed during background fill");
+          source = fresh;
+          indexed.get(video, source, track.id(), segment, false);
+        }
+        completed++;
+        update(id, "RUNNING", null, completed, total);
+      }
+    }
+    update(id, "COMPLETED", null, completed, total);
   }
 
   private void fillFmp4(String video, String id, MediaSourceService.Source source) throws Exception {

@@ -4,6 +4,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import ch.it4user.fintube.api.contract.model.MediaPreferences;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -31,12 +33,41 @@ class MaterializedVideoDownloadServiceTest {
   }
 
   @Test
-  void downloadPrefersH264AndAacWhenResolutionAndFrameRateAreEqual() {
+  void downloadDefaultsTo1080pWithTheDefaultCodecListAndAacAudio() {
     List<String> command = MaterializedVideoDownloadService.downloadCommand(Map.of(), "", "",
         Path.of("video.%(ext)s"), "video");
 
-    assertThat(command).containsSubsequence("-f", "bv*+ba/b")
-        .containsSubsequence("-S", "res,fps,hdr:SDR,+codec:avc:m4a");
+    String video = "bv*[height<=1080][vcodec~='^(avc1|h264|vp0?9|av01)']";
+    assertThat(command).containsSubsequence("-f", video + "+ba[acodec^=mp4a]/" + video + "+ba/b[height<=1080]/bv*+ba/b")
+        .containsSubsequence("-S", "res,fps,hdr:SDR,vcodec:h264,acodec:aac");
+  }
+
+  @Test
+  void downloadHonoursPersonalQualityAndCodecWhitelist() {
+    var preferences = new MediaPreferences(MediaPreferences.QualityEnum.fromValue("2160"), "vp9,h264", "aac");
+    List<String> command = MaterializedVideoDownloadService.downloadCommand(Map.of(), "", "",
+        Path.of("video.%(ext)s"), "video", preferences);
+
+    String video = "bv*[height<=2160][vcodec~='^(vp0?9|avc1|h264)']";
+    assertThat(command).containsSubsequence("-f", video + "+ba[acodec^=mp4a]/" + video + "+ba/b[height<=2160]/bv*+ba/b")
+        .containsSubsequence("-S", "res,fps,hdr:SDR,vcodec:vp9,acodec:aac")
+        .containsSubsequence("--merge-output-format", "mp4");
+  }
+
+  @Test
+  void acceptedVp9IsCopiedAndOnlyOpusIsConverted() {
+    Set<String> vp9 = Set.of("vp9", "h264");
+    var vp9Opus = new MaterializedVideoDownloadService.StreamInfo("vp9", "yuv420p", "opus");
+    assertThat(vp9Opus.directPlayable(vp9)).isFalse();
+    assertThat(MaterializedVideoDownloadService.compatibilityCommand("ffmpeg", Path.of("in.webm"), Path.of("out.mp4"), vp9Opus, vp9))
+        .containsSubsequence("-c:v", "copy")
+        .containsSubsequence("-c:a", "aac");
+    assertThat(new MaterializedVideoDownloadService.StreamInfo("vp9", "yuv420p", "aac").directPlayable(vp9)).isTrue();
+    assertThat(new MaterializedVideoDownloadService.StreamInfo("vp9", "yuv420p10le", "aac").directPlayable(vp9)).isFalse();
+    assertThat(MaterializedVideoDownloadService.compatibilityCommand("ffmpeg", Path.of("in.webm"), Path.of("out.mp4"), vp9Opus, Set.of("h264")))
+        .containsSubsequence("-c:v", "libx264");
+    assertThat(MaterializedVideoDownloadService.allowedVideoCodecs(
+        new MediaPreferences(MediaPreferences.QualityEnum.fromValue("1080"), "vp9,av1", "aac"))).containsExactly("vp9", "av1");
   }
 
   @Test

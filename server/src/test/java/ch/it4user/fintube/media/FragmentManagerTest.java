@@ -22,6 +22,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -129,6 +130,26 @@ class FragmentManagerTest {
           """.getBytes();
       exchange.sendResponseHeaders(200, bytes.length);
       try (var out = exchange.getResponseBody()) { out.write(bytes); }
+    });
+    server.createContext("/adaptive/", exchange -> {
+      String name = exchange.getRequestURI().getPath().substring("/adaptive/".length());
+      byte[] all = switch (name) {
+        case "vp9.webm" -> AdaptiveTestMedia.webm(new long[]{0, 5000, 10000}, 4000, 15000);
+        case "h264.mp4", "av1.mp4" -> AdaptiveTestMedia.mp4(3, 3000, 1000, 5000);
+        case "aac.m4a" -> AdaptiveTestMedia.mp4(2, 800, 44100, 330750);
+        default -> null;
+      };
+      if (all == null) { exchange.sendResponseHeaders(404, -1); exchange.close(); return; }
+      String range = exchange.getRequestHeaders().getFirst("Range");
+      int start = 0, end = all.length - 1;
+      if (range != null) {
+        String[] bounds = range.substring("bytes=".length()).split("-");
+        start = Integer.parseInt(bounds[0]);
+        end = Math.min(all.length - 1, Integer.parseInt(bounds[1]));
+        exchange.getResponseHeaders().add("Content-Range", "bytes " + start + "-" + end + "/" + all.length);
+      }
+      exchange.sendResponseHeaders(range == null ? 200 : 206, end - start + 1);
+      try (var out = exchange.getResponseBody()) { out.write(all, start, end - start + 1); }
     });
     server.start();
     source = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/fragment");
@@ -379,13 +400,82 @@ class FragmentManagerTest {
   @Test
   void persistedSourceSurvivesServiceRecreation() throws Exception {
     String json = """
-        {"format":"137","videoFormat":"137","duration":12,"targetDuration":6,"videoCodec":"h264","audioCodec":"aac","container":"mp4","progressive":true,"bandwidth":8000000,"codecs":"avc1.640028,mp4a.40.2","selectionPolicy":"selector-v2|720|h264,vp9|aac,opus||",
+        {"format":"137","videoFormat":"137","duration":12,"targetDuration":6,"videoCodec":"h264","audioCodec":"aac","container":"mp4","progressive":true,"bandwidth":8000000,"codecs":"avc1.640028,mp4a.40.2","selectionPolicy":"selector-v3|720|h264,vp9|aac,opus||",
          "fragments":[{"id":"v0","url":"http://persisted/0","seconds":6},{"id":"v1","url":"http://persisted/1","seconds":6}]}""";
     mediaSources.save(new MediaSourceEntity("VIDEO1", "137", json, 12, null, java.time.Instant.now().toString()));
     MediaSourceService.Source loaded = new MediaSourceService(settings, mediaSources).source("VIDEO1");
     assertEquals("137", loaded.format());
     assertEquals(2, loaded.fragments().size());
     assertEquals(12, loaded.duration());
+  }
+
+  @Test
+  void rangeDownloadCachesOnlyTheRequestedBytes() throws Exception {
+    FragmentManager manager = manager();
+    URI file = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/adaptive/h264.mp4");
+    byte[] all = AdaptiveTestMedia.mp4(3, 3000, 1000, 5000);
+
+    Path part = manager.getRange("VIDEO1", "137-v0", "s1", file, 100, 400, true);
+
+    assertArrayEquals(java.util.Arrays.copyOfRange(all, 100, 400), Files.readAllBytes(part));
+  }
+
+  @Test
+  void personalCodecListIsAWhitelist() throws Exception {
+    when(settings.value("stream_quality")).thenReturn("2160");
+    MediaSourceService service = new MediaSourceService(settings, mediaSources);
+    var root = new ObjectMapper().readTree("""
+        {"duration":12,"formats":[
+          {"format_id":"401","height":2160,"vcodec":"av01.0.12M.08","acodec":"none","ext":"mp4","url":"http://video/av1","fragments":[{"url":"http://video/a0","duration":6},{"url":"http://video/a1","duration":6}]},
+          {"format_id":"312","height":1080,"vcodec":"avc1.64002a","acodec":"none","ext":"mp4","url":"http://video/1080","fragments":[{"url":"http://video/0","duration":6},{"url":"http://video/1","duration":6}]},
+          {"format_id":"140","height":0,"vcodec":"none","acodec":"mp4a.40.2","ext":"m4a","url":"http://audio","fragments":[{"url":"http://audio/0","duration":6},{"url":"http://audio/1","duration":6}]}
+        ]}""");
+
+    assertEquals("312+140-tsv6", service.select(root).format(), "AV1 is not in h264,vp9 and must not be chosen");
+  }
+
+  @Test
+  void httpsVp9AndAacAreServedAsIndexedTracksWithAnH264Variant() throws Exception {
+    when(settings.value("stream_quality")).thenReturn("2160");
+    when(settings.value("preferred_video_codecs")).thenReturn("vp9,h264");
+    MediaSourceService service = new MediaSourceService(settings, mediaSources);
+    String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/adaptive/";
+    var root = new ObjectMapper().readTree("""
+        {"duration":15,"formats":[
+          {"format_id":"18","width":640,"height":360,"vcodec":"avc1.42001E","acodec":"mp4a.40.2","ext":"mp4","protocol":"https","url":"%1$sh264.mp4"},
+          {"format_id":"137","width":1920,"height":1080,"fps":30,"tbr":4000,"vcodec":"avc1.640028","acodec":"none","ext":"mp4","protocol":"https","url":"%1$sh264.mp4"},
+          {"format_id":"313","width":3840,"height":2160,"fps":30,"tbr":18000,"vcodec":"vp9","acodec":"none","ext":"webm","protocol":"https","url":"%1$svp9.webm"},
+          {"format_id":"401","width":3840,"height":2160,"fps":30,"tbr":15000,"vcodec":"av01.0.12M.08","acodec":"none","ext":"mp4","protocol":"https","url":"%1$sav1.mp4"},
+          {"format_id":"251","vcodec":"none","acodec":"opus","abr":140,"ext":"webm","protocol":"https","url":"%1$svp9.webm"},
+          {"format_id":"140","vcodec":"none","acodec":"mp4a.40.2","abr":129,"ext":"m4a","protocol":"https","url":"%1$saac.m4a"}
+        ]}""".formatted(base));
+
+    MediaSourceService.Source selected = service.select(root);
+
+    assertEquals("313+140~137-idxv1", selected.format());
+    assertTrue(selected.indexed());
+    assertEquals(List.of("v0", "v1", "a"), selected.tracks().stream().map(MediaSourceService.IndexedTrack::id).toList());
+    assertEquals("137", selected.track("v0").formatId(), "the H.264 compatibility variant is listed first");
+    assertEquals("313", selected.track("v1").formatId());
+    assertEquals("vp09.00.50.08", selected.track("v1").codecs());
+    assertEquals("webm", selected.track("v1").container());
+    assertEquals(3, selected.track("v1").segments().size());
+    assertEquals("mp4a.40.2", selected.audioTrack().codecs());
+    assertEquals(2160, selected.height());
+  }
+
+  @Test
+  void unindexableVp9IsNeverRemuxedIntoMpegTs() throws Exception {
+    when(settings.value("preferred_video_codecs")).thenReturn("vp9");
+    MediaSourceService service = new MediaSourceService(settings, mediaSources);
+    String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/adaptive/";
+    var root = new ObjectMapper().readTree("""
+        {"duration":15,"formats":[
+          {"format_id":"247","width":1280,"height":720,"vcodec":"vp9","acodec":"none","ext":"webm","protocol":"https","url":"%1$smissing.webm"},
+          {"format_id":"140","vcodec":"none","acodec":"mp4a.40.2","ext":"m4a","protocol":"https","url":"%1$saac.m4a"}
+        ]}""".formatted(base));
+
+    assertThrows(IllegalStateException.class, () -> service.select(root));
   }
 
   private Path get(FragmentManager manager, boolean high) {

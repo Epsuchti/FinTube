@@ -53,7 +53,7 @@ public class FragmentManager {
   final ConcurrentHashMap<String, Inflight> inflight = new ConcurrentHashMap<>();
   private final AtomicInteger interactive = new AtomicInteger();
 
-  private static final class Inflight {
+  public static final class Inflight {
     final CompletableFuture<Path> result = new CompletableFuture<>();
     final boolean high;
     volatile boolean promoted;
@@ -96,6 +96,55 @@ public class FragmentManager {
 
   public Path get(String video, String format, String fragment, URI videoSource,
                   URI audioSource, double startSeconds, boolean high) throws Exception {
+    return produce(video, format, fragment, high, (target, owner) -> {
+      Path tmpVideo = temporary(target);
+      download(video, format, fragment, videoSource, -1, -1, tmpVideo, high, owner, "video");
+      if (audioSource == null) return tmpVideo;
+      Path tmpAudio = temporary(target);
+      try {
+        download(video, format, fragment, audioSource, -1, -1, tmpAudio, high, owner, "audio");
+        return remux(tmpVideo, tmpAudio, temporary(target), startSeconds);
+      } finally {
+        Files.deleteIfExists(tmpAudio);
+        Files.deleteIfExists(tmpVideo);
+      }
+    });
+  }
+
+  /** Writes one cached artefact. Returns the temporary file holding the result. */
+  @FunctionalInterface
+  public interface Producer {
+    Path produce(Path target, Inflight owner) throws Exception;
+  }
+
+  /** Cache a byte range of an upstream file, e.g. one indexed adaptive segment. */
+  public Path getRange(String video, String format, String fragment, URI source, long start, long endExclusive,
+                       boolean high) throws Exception {
+    return produce(video, format, fragment, high, (target, owner) -> {
+      Path tmp = temporary(target);
+      download(video, format, fragment, source, start, endExclusive, tmp, high, owner, "range");
+      return tmp;
+    });
+  }
+
+  /** Lease-protected stream of an artefact created by {@link #produce}. */
+  public InputStream openProduced(String video, String format, String fragment, boolean high,
+                                  Producer producer) throws Exception {
+    markActive(video, format, 0, 1);
+    try {
+      Path path = produce(video, format, fragment, high, producer);
+      return leased(video, format, Files.newInputStream(path));
+    } catch (Exception e) {
+      markActive(video, format, 0, -1);
+      throw e;
+    }
+  }
+
+  /**
+   * Single-flight, cached creation of one logical artefact. The producer writes a
+   * temporary file next to the target; it is published atomically on success.
+   */
+  public Path produce(String video, String format, String fragment, boolean high, Producer producer) throws Exception {
     if (high) interactive.incrementAndGet();
     try {
       Path cached = cached(video, format, fragment);
@@ -135,19 +184,9 @@ public class FragmentManager {
         // A high-priority request may arrive while a low-priority worker was
         // waiting. The low worker already owns this single-flight entry, so it
         // is safe to finish it; the high request joins without duplication.
-        Path tmpVideo = temporary(target);
-        download(video, format, fragment, videoSource, tmpVideo, high, created, "video");
-        Path tmpFinal = tmpVideo;
-        if (audioSource != null) {
-          Path tmpAudio = temporary(target);
-          try {
-            download(video, format, fragment, audioSource, tmpAudio, high, created, "audio");
-            tmpFinal = remux(tmpVideo, tmpAudio, temporary(target), startSeconds);
-          } finally {
-            Files.deleteIfExists(tmpAudio);
-            Files.deleteIfExists(tmpVideo);
-          }
-        }
+        Path tmpFinal = producer.produce(target, created);
+        if (tmpFinal == null || !Files.isRegularFile(tmpFinal) || Files.size(tmpFinal) == 0)
+          throw new IOException("empty media artefact");
         Files.move(tmpFinal, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         upsert(video, format, fragment, target);
         created.result.complete(target);
@@ -186,7 +225,14 @@ public class FragmentManager {
     markActive(video, format, 0, 1);
     try {
       Path path = get(video, format, fragment, videoSource, audioSource, startSeconds, high);
-      InputStream delegate = Files.newInputStream(path);
+      return leased(video, format, Files.newInputStream(path));
+    } catch (Exception e) {
+      markActive(video, format, 0, -1);
+      throw e;
+    }
+  }
+
+  private InputStream leased(String video, String format, InputStream delegate) {
       return new FilterInputStream(delegate) {
         private boolean closed;
         @Override public void close() throws IOException {
@@ -196,10 +242,6 @@ public class FragmentManager {
           }
         }
       };
-    } catch (Exception e) {
-      markActive(video, format, 0, -1);
-      throw e;
-    }
   }
 
   /** Mark a format complete when all expected fragments have been published. */
@@ -236,7 +278,7 @@ public class FragmentManager {
     return paths.cacheRoot.resolve(safe(video)).resolve(safe(format)).resolve(safe(fragment) + ".part");
   }
 
-  private static Path temporary(Path target) {
+  public static Path temporary(Path target) {
     return target.resolveSibling(target.getFileName() + ".tmp-" + UUID.randomUUID());
   }
 
@@ -252,12 +294,13 @@ public class FragmentManager {
     } catch (IOException ignored) { }
   }
 
-  private void download(String video, String format, String fragment, URI source, Path target,
-                        boolean high, Inflight owner, String track) throws Exception {
+  /** Download a whole file ({@code start < 0}) or the byte range [start, endExclusive). */
+  public void download(String video, String format, String fragment, URI source, long start, long endExclusive,
+                       Path target, boolean high, Inflight owner, String track) throws Exception {
     Exception failure = null;
     for (int attempt = 0; attempt < 4; attempt++) {
       try {
-        downloadOnce(video, format, fragment, source, target, high, owner, track, attempt + 1);
+        downloadOnce(video, format, fragment, source, start, endExclusive, target, high, owner, track, attempt + 1);
         return;
       } catch (ExpiredSourceException e) {
         LOG.warn("event=MEDIA_FRAGMENT_SOURCE_EXPIRED video={} format={} fragment={} track={} priority={} attempt={} statusCode={}",
@@ -275,13 +318,18 @@ public class FragmentManager {
     throw failure;
   }
 
-  private void downloadOnce(String video, String format, String fragment, URI source, Path target,
-                            boolean high, Inflight owner, String track, int attempt) throws Exception {
+  private void downloadOnce(String video, String format, String fragment, URI source, long rangeStart, long rangeEnd,
+                            Path target, boolean high, Inflight owner, String track, int attempt) throws Exception {
     if (source == null) throw new IllegalArgumentException("missing source URL");
+    boolean ranged = rangeStart >= 0;
+    if (ranged && rangeEnd <= rangeStart) throw new IllegalArgumentException("empty byte range");
     long downloadStarted = System.nanoTime();
-    LOG.info("event=MEDIA_FRAGMENT_DOWNLOAD_STARTED video={} format={} fragment={} track={} priority={} attempt={} source={}",
-        video, format, fragment, track, priority(high), attempt, sourceEndpoint(source));
-    HttpRequest request = HttpRequest.newBuilder(source).GET().build();
+    LOG.info("event=MEDIA_FRAGMENT_DOWNLOAD_STARTED video={} format={} fragment={} track={} priority={} attempt={} source={} range={}",
+        video, format, fragment, track, priority(high), attempt, sourceEndpoint(source),
+        ranged ? rangeStart + "-" + (rangeEnd - 1) : "all");
+    HttpRequest.Builder builder = HttpRequest.newBuilder(source).GET();
+    if (ranged) builder.header("Range", "bytes=" + rangeStart + "-" + (rangeEnd - 1));
+    HttpRequest request = builder.build();
     // Read in bounded chunks instead of BodyHandlers.ofFile so a low-priority
     // transfer can yield between reads when unrelated playback is active.
     HttpResponse<InputStream> response = externalHttp.send(request, HttpResponse.BodyHandlers.ofInputStream());
@@ -301,13 +349,17 @@ public class FragmentManager {
     }
     long started = System.nanoTime();
     long bytes = 0;
+    // A server that ignores Range answers 200 with the whole file: skip to the range.
+    long skip = ranged && response.statusCode() == 200 ? rangeStart : 0;
+    long limit = ranged ? rangeEnd - rangeStart : Long.MAX_VALUE;
     try (InputStream in = response.body(); var out = Files.newOutputStream(target)) {
+      if (skip > 0) in.skipNBytes(skip);
       byte[] buffer = new byte[64 * 1024];
       int read;
-      while ((read = in.read(buffer)) != -1) {
-        if (!high && !owner.promoted) {
+      while (bytes < limit && (read = in.read(buffer, 0, (int) Math.min(buffer.length, limit - bytes))) != -1) {
+        if (!high && (owner == null || !owner.promoted)) {
           awaitForegroundTurn();
-          paceBackground(bytes, started, owner);
+          if (owner != null) paceBackground(bytes, started, owner);
         }
         out.write(buffer, 0, read);
         bytes += read;
@@ -315,6 +367,8 @@ public class FragmentManager {
     }
     if (bytes == 0 || !Files.isRegularFile(target) || Files.size(target) == 0)
       throw new IOException("empty upstream fragment");
+    if (ranged && bytes != limit)
+      throw new IOException("short upstream range: expected " + limit + " bytes, received " + bytes);
     LOG.info("event=MEDIA_FRAGMENT_DOWNLOAD_SUCCEEDED video={} format={} fragment={} track={} priority={} attempt={} statusCode={} bytes={} durationMs={}",
         video, format, fragment, track, priority(high), attempt, response.statusCode(), bytes,
         (System.nanoTime() - downloadStarted) / 1_000_000);

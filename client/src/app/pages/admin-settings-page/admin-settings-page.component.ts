@@ -31,6 +31,7 @@ export class AdminSettingsPageComponent implements OnInit {
     readonly settingLabels: Record<string, string> = {
         background_fill_on_playback: 'Complete videos during playback',
         sponsorblock_enabled: 'Skip SponsorBlock sponsor segments',
+        playback_compat_variant: 'Offer an H.264 variant next to VP9/AV1',
         sponsorblock_api_url: 'SponsorBlock API URL',
         allowed_video_codecs: 'Allowed video codecs',
         allowed_audio_codecs: 'Allowed audio codecs',
@@ -70,7 +71,7 @@ export class AdminSettingsPageComponent implements OnInit {
     readonly settingGroups: SettingGroup[] = [
         {
             title: 'Playback',
-            keys: ['background_fill_on_playback', 'sponsorblock_enabled', 'sponsorblock_api_url', 'allowed_video_codecs', 'allowed_audio_codecs', 'public_base_url']
+            keys: ['background_fill_on_playback', 'playback_compat_variant', 'sponsorblock_enabled', 'sponsorblock_api_url', 'allowed_video_codecs', 'allowed_audio_codecs', 'public_base_url']
         },
         {
             title: 'Cache',
@@ -112,6 +113,7 @@ export class AdminSettingsPageComponent implements OnInit {
         if (key === 'cache_min_free_gb') return 'The cache evicts the oldest inactive fragments when the filesystem drops below this free-space reserve.';
         if (key === 'background_download_max_mbps') return 'Maximum rate for low-priority prefetch jobs. Playback traffic is not limited by this setting.';
         if (key === 'background_fill_on_playback') return 'When enabled, starting playback also downloads the remaining fragments. When disabled, only requested playback fragments are downloaded.';
+        if (key === 'playback_compat_variant') return 'Adds H.264 (up to 1080p) as a first HLS variant when a VP9 or AV1 stream is selected, so devices without VP9 (for example Apple’s native player) still direct-play while capable players use VP9.';
         if (key === 'sponsorblock_enabled') return 'Uses SponsorBlock’s privacy-preserving lookup API to skip sponsor segments during Jellyfin playback.';
         if (key === 'sponsorblock_api_url') return 'Official SponsorBlock API by default. Set this only when using a compatible self-hosted mirror.';
         if (key === 'youtube_po_token_provider_enabled') return 'Leave enabled. The provider address is configured by the deployment, not here.';
@@ -125,7 +127,7 @@ export class AdminSettingsPageComponent implements OnInit {
     }
 
     isBoolean(key: string): boolean {
-        return key === 'background_fill_on_playback' || key === 'sponsorblock_enabled' || key === 'youtube_po_token_provider_enabled' || key === 'youtube_mark_watched' || key === 'jellyfin_enabled' || key === 'jellyfin_auto_refresh' || key === 'jellyfin_runtime_sync' || key === 'jellyfin_remove_watched' || key === 'jellyfin_download_favorites';
+        return key === 'background_fill_on_playback' || key === 'playback_compat_variant' || key === 'sponsorblock_enabled' || key === 'youtube_po_token_provider_enabled' || key === 'youtube_mark_watched' || key === 'jellyfin_enabled' || key === 'jellyfin_auto_refresh' || key === 'jellyfin_runtime_sync' || key === 'jellyfin_remove_watched' || key === 'jellyfin_download_favorites';
     }
 
     setSetting(key: string, value: string): void {

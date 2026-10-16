@@ -41,6 +41,34 @@ public class Fmp4PlaybackController {
         return fragment(video, format, "audio", index, token);
     }
 
+    @GetMapping("/play/{video}/idx/{format}/{track}/index.m3u8")
+    public ResponseEntity<String> indexedManifest(@PathVariable String video, @PathVariable String format,
+                                                  @PathVariable String track, @RequestParam String token) {
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType("application/vnd.apple.mpegurl"))
+                .header("Cache-Control", "private, no-store")
+                .body(playback.indexedTrackManifest(video, format, track, token));
+    }
+
+    @GetMapping("/play/{video}/idx/{format}/{track}/init.mp4")
+    public ResponseEntity<Resource> indexedInit(@PathVariable String video, @PathVariable String format,
+                                                @PathVariable String track, @RequestParam String token) {
+        return indexed(video, format, track, null, token);
+    }
+
+    @GetMapping("/play/{video}/idx/{format}/{track}/{index}.m4s")
+    public ResponseEntity<Resource> indexedSegment(@PathVariable String video, @PathVariable String format,
+                                                   @PathVariable String track, @PathVariable Integer index,
+                                                   @RequestParam String token) {
+        return indexed(video, format, track, index, token);
+    }
+
+    private ResponseEntity<Resource> indexed(String video, String format, String track, Integer index, String token) {
+        PlaybackService.Fragment value = playback.indexedSegment(video, format, track, index, token);
+        return ResponseEntity.ok().contentLength(value.contentLength()).contentType(value.contentType())
+                .header("Cache-Control", "private, max-age=3600")
+                .body(value.resource());
+    }
+
     private ResponseEntity<Resource> fragment(String video, String format, String track, Integer index, String token) {
         PlaybackService.Fragment value = playback.fmp4TrackFragment(video, format, track, index, token);
         return ResponseEntity.ok().contentLength(value.contentLength()).contentType(value.contentType())

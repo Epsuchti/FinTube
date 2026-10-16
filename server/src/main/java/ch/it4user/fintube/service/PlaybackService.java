@@ -2,6 +2,7 @@ package ch.it4user.fintube.service;
 
 import ch.it4user.fintube.media.BackgroundFillService;
 import ch.it4user.fintube.media.FragmentManager;
+import ch.it4user.fintube.media.IndexedMediaService;
 import ch.it4user.fintube.media.MediaSourceService;
 import ch.it4user.fintube.media.SponsorRenditionService;
 import ch.it4user.fintube.integration.JellyfinSyncService;
@@ -37,10 +38,16 @@ public class PlaybackService {
     private final SponsorRenditionService renditions;
     private final JellyfinSyncService jellyfin;
     private final UserMediaPreferencesService mediaPreferences;
+    private final IndexedMediaService indexed;
     private final java.util.concurrent.ConcurrentHashMap<String, String> reportedVersions = new java.util.concurrent.ConcurrentHashMap<>();
 
-    @org.springframework.beans.factory.annotation.Autowired
     public PlaybackService(UserVideoRepository userVideos, AuthService auth, MediaSourceService sources, FragmentManager fragments, BackgroundFillService filler, SettingsService settings, SponsorBlockService sponsorBlock, SponsorRenditionService renditions, JellyfinSyncService jellyfin, UserMediaPreferencesService mediaPreferences) {
+        this(userVideos, auth, sources, fragments, filler, settings, sponsorBlock, renditions, jellyfin, mediaPreferences, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public PlaybackService(UserVideoRepository userVideos, AuthService auth, MediaSourceService sources, FragmentManager fragments, BackgroundFillService filler, SettingsService settings, SponsorBlockService sponsorBlock, SponsorRenditionService renditions, JellyfinSyncService jellyfin, UserMediaPreferencesService mediaPreferences, IndexedMediaService indexed) {
+        this.indexed = indexed;
         this.userVideos = userVideos;
         this.auth = auth;
         this.sources = sources;
@@ -67,6 +74,12 @@ public class PlaybackService {
             String resolvedToken = resolveToken(video, token, request);
             valid(video, resolvedToken);
             var source = source(video, preferences(video, resolvedToken));
+            if (source.indexed()) {
+                reportRuntime(video, resolvedToken, "idx:" + source.format(), source.duration());
+                LOG.info("event=PLAYBACK_INDEXED_SELECTED video={} format={} height={} variants={}", video,
+                        source.format(), source.height(), source.videoTracks().size());
+                return indexedMaster(video, resolvedToken, source);
+            }
             if (source.fmp4()) {
                 reportRuntime(video, resolvedToken, "fmp4:" + source.format(), source.duration());
                 LOG.info("event=PLAYBACK_FMP4_SELECTED video={} format={} height={}", video, source.format(), source.height());
@@ -111,6 +124,84 @@ public class PlaybackService {
         if (source.codecs() != null) out.append(",CODECS=\"").append(source.codecs()).append('"');
         return out.append(",AUDIO=\"audio\"\n").append(base).append("video/index.m3u8?token=")
                 .append(encode(token)).append('\n').toString();
+    }
+
+    /**
+     * Multivariant playlist for independently segmented fMP4 tracks. Every video
+     * variant shares one AAC rendition; players pick the best variant whose
+     * CODECS they can decode (for example VP9 on Android/Chrome, H.264 on Apple).
+     */
+    static String indexedMaster(String video, String token, MediaSourceService.Source source) {
+        String base = "/play/" + encode(video) + "/idx/" + fmp4Key(source.format()) + "/";
+        var audio = source.audioTrack();
+        StringBuilder out = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-INDEPENDENT-SEGMENTS\n")
+                .append("#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"Default\",DEFAULT=YES,AUTOSELECT=YES,CHANNELS=\"2\",URI=\"")
+                .append(base).append(audio.id()).append("/index.m3u8?token=").append(encode(token)).append("\"\n");
+        for (var track : source.videoTracks()) {
+            out.append("#EXT-X-STREAM-INF:BANDWIDTH=").append(Math.max(1, track.bandwidth() + audio.bandwidth()));
+            if (track.width() > 0 && track.height() > 0)
+                out.append(",RESOLUTION=").append(track.width()).append('x').append(track.height());
+            if (track.fps() > 0)
+                out.append(",FRAME-RATE=").append(String.format(java.util.Locale.ROOT, "%.3f", track.fps()));
+            if (!"SDR".equalsIgnoreCase(track.dynamicRange()) && track.dynamicRange() != null && !track.dynamicRange().isBlank())
+                out.append(",VIDEO-RANGE=").append(track.dynamicRange().toUpperCase(java.util.Locale.ROOT).contains("HLG") ? "HLG" : "PQ");
+            out.append(",CODECS=\"").append(track.codecs()).append(',').append(audio.codecs()).append('"')
+                    .append(",AUDIO=\"aac\"\n")
+                    .append(base).append(track.id()).append("/index.m3u8?token=").append(encode(token)).append('\n');
+        }
+        return out.toString();
+    }
+
+    public String indexedTrackManifest(String video, String format, String trackId, String token) {
+        valid(video, token);
+        try {
+            var source = source(video, preferences(video, token));
+            var track = source.indexed() && fmp4Key(source.format()).equals(format) ? source.track(trackId) : null;
+            if (track == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            String base = "/play/" + encode(video) + "/idx/" + format + "/" + trackId + "/";
+            double target = 1;
+            for (var segment : track.segments()) target = Math.max(target, segment.seconds());
+            StringBuilder out = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-INDEPENDENT-SEGMENTS\n")
+                    .append("#EXT-X-TARGETDURATION:").append((int) Math.ceil(target)).append("\n#EXT-X-MEDIA-SEQUENCE:0\n")
+                    .append("#EXT-X-MAP:URI=\"").append(base).append("init.mp4?token=").append(encode(token)).append("\"\n");
+            for (int i = 0; i < track.segments().size(); i++) out.append("#EXTINF:")
+                    .append(String.format(java.util.Locale.ROOT, "%.6f", track.segments().get(i).seconds()))
+                    .append(",\n").append(base).append(i).append(".m4s?token=").append(encode(token)).append('\n');
+            return out.append("#EXT-X-ENDLIST\n").toString();
+        } catch (ResponseStatusException e) { throw e; }
+        catch (Exception e) { throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "indexed playlist unavailable", e); }
+    }
+
+    /** Init section ({@code index == null}) or media segment of an indexed track. */
+    public Fragment indexedSegment(String video, String format, String trackId, Integer index, String token) {
+        valid(video, token);
+        if (indexed == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+        try {
+            MediaPreferences preferences = preferences(video, token);
+            var source = source(video, preferences);
+            if (!source.indexed() || !fmp4Key(source.format()).equals(format) || source.track(trackId) == null)
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            var track = source.track(trackId);
+            if (index != null && (index < 0 || index >= track.segments().size()))
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+            IndexedMediaService.Media media;
+            try {
+                media = indexed.open(video, source, trackId, index, true);
+            } catch (FragmentManager.ExpiredSourceException expired) {
+                var refreshed = sources.refresh(video, preferences, "indexed_segment_source_expired");
+                var fresh = refreshed.track(trackId);
+                if (!refreshed.indexed() || !refreshed.format().equals(source.format()) || fresh == null
+                        || !fresh.segments().equals(track.segments()) || fresh.initEnd() != track.initEnd())
+                    throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "indexed source changed during playback", expired);
+                media = indexed.open(video, refreshed, trackId, index, true);
+            }
+            return new Fragment(new InputStreamResource(media.stream()), media.bytes(), MediaType.parseMediaType(media.contentType()));
+        } catch (ResponseStatusException e) { throw e; }
+        catch (Exception e) {
+            LOG.error("event=PLAYBACK_INDEXED_SEGMENT_FAILED video={} track={} segment={} reason={}", video, trackId,
+                    index == null ? "init" : index, e.toString(), e);
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "indexed segment unavailable", e);
+        }
     }
 
     public String fmp4TrackManifest(String video, String format, String track, String token) {
@@ -168,7 +259,18 @@ public class PlaybackService {
             long bytes = Files.size(path);
             InputStream stream = fragments.open(video, cacheFormat, key, uri, true);
             return new Fragment(new InputStreamResource(stream), bytes, MediaType.parseMediaType(
-                    "video".equals(track) ? "video/mp4" : "audio/aac"));
+                    "video".equals(track) ? "video/mp4" : sniffAudioType(path)));
+    }
+
+    /** HLS audio segments from YouTube are usually MPEG-TS; label them by content, not by URL suffix. */
+    static String sniffAudioType(Path path) {
+        try (InputStream in = Files.newInputStream(path)) {
+            byte[] head = in.readNBytes(8);
+            if (head.length > 0 && (head[0] & 0xff) == 0x47) return "video/mp2t";
+            if (head.length >= 8 && new String(head, 4, 4, java.nio.charset.StandardCharsets.ISO_8859_1).matches("ftyp|styp|moof|sidx"))
+                return "audio/mp4";
+        } catch (java.io.IOException ignored) { }
+        return "audio/aac";
     }
 
     private static String fmp4Key(String format) {
