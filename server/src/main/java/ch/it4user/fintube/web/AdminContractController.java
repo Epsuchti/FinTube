@@ -11,6 +11,7 @@ import ch.it4user.fintube.api.contract.model.UpdateRoleRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 import jakarta.servlet.http.HttpServletRequest;
 
 import java.util.List;
@@ -72,6 +73,12 @@ public class AdminContractController implements AdminApi {
     @Override
     public ResponseEntity<Void> updateSettings(Map<String, String> requestBody) {
         admin.updateSettings(requestContext, requestBody);
+        return ResponseEntity.ok().build();
+    }
+
+    @Override
+    public ResponseEntity<Void> uploadGlobalCookieFile(MultipartFile file) {
+        admin.uploadGlobalCookieFile(requestContext, file);
         return ResponseEntity.ok().build();
     }
 

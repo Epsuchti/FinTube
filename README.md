@@ -142,7 +142,7 @@ FinTube can reconcile completed Jellyfin items during the normal subscription sy
 2. Enable **Remove watched videos during sync**. FinTube removes the generated library directory, requests a Jellyfin refresh, and records a per-user tombstone so later syncs do not recreate it.
 3. To update YouTube history too, place a persistent Netscape-format `cookies.txt` export for the desired YouTube account somewhere inside the FinTube data volume, set **YouTube watched-state cookie file** to its container path (for example `/data/youtube-history.cookies.txt`), and enable **Mark removed videos watched on YouTube**.
 
-The watched-state cookie is deliberately separate from the optional **Cookie file** used for media fetching and is never passed to a download or playback-source request. YouTube history updates use `yt-dlp --mark-watched` because the official YouTube Data API does not provide a watch-history write operation. They are best-effort: expired cookies or upstream YouTube changes are logged and retried on a later sync without blocking subscription ingestion. Treat the cookie file like a password and use a dedicated YouTube-only browser profile.
+The watched-state cookie is deliberately separate from the optional global **YouTube cookie file**. Upload the global Netscape-format `cookies.txt` from **Administration → Global settings → Network and yt-dlp**; FinTube stores it privately and supplies it to `yt-dlp` for all shared media probes and downloads. YouTube history updates use `yt-dlp --mark-watched` because the official YouTube Data API does not provide a watch-history write operation. They are best-effort: expired cookies or upstream YouTube changes are logged and retried on a later sync without blocking subscription ingestion. Treat cookie files like passwords and use dedicated YouTube-only browser profiles.
 
 ### 4. Set the public playback URL
 
@@ -172,7 +172,7 @@ For cookie import, use a dedicated YouTube-only browser profile and delete the e
 | YouTube Data API key | Yes, per user | Google Cloud Console → APIs & Services → Credentials | Restrict it to YouTube Data API v3 and never publish it. |
 | Jellyfin API key | Yes for Jellyfin integration | Jellyfin Dashboard → API Keys | Create a dedicated key named `FinTube`. |
 | YouTube PO token | No | Automatically supplied by the included BgUtils provider | Leave the manual PO-token field blank and keep the provider enabled. |
-| YouTube `cookies.txt` | No | Export from a browser profile signed in only to YouTube | Used once for subscription import, or stored persistently when YouTube watched-state sync is enabled; treat it like a password. |
+| YouTube `cookies.txt` | No | Export from a browser profile signed in only to YouTube | Upload globally in Administration for shared `yt-dlp` media requests; it can also be used once for subscription import or stored per user for watched-state sync. Treat it like a password. |
 | `FINTUBE_SETTINGS_KEY` | Recommended for backups | Generate locally, for example with `openssl rand -base64 32` | Set it before first start and store it with your backup secrets. Never change or lose it. |
 
 The setup token, YouTube API key, Jellyfin API key, and PO token are different credentials and cannot replace one another.

@@ -59,14 +59,12 @@ export class AdminSettingsPageComponent implements OnInit {
         ffmpeg_path: 'FFmpeg path',
         proxy_url: 'Proxy URL',
         proxy_username: 'Proxy username',
-        proxy_password: 'Proxy password',
-        cookie_file: 'Cookie file'
+        proxy_password: 'Proxy password'
     };
 
     readonly secretSettings = new Set([
         'jellyfin_api_key',
         'proxy_password',
-        'cookie_file',
         'youtube_po_token'
     ]);
     readonly settingGroups: SettingGroup[] = [
@@ -88,12 +86,13 @@ export class AdminSettingsPageComponent implements OnInit {
         },
         {
             title: 'Network and yt-dlp',
-            keys: ['yt_dlp_path', 'ffmpeg_path', 'proxy_url', 'proxy_username', 'proxy_password', 'cookie_file']
+            keys: ['yt_dlp_path', 'ffmpeg_path', 'proxy_url', 'proxy_username', 'proxy_password']
         }
     ];
     readonly settings = signal<Record<string, string>>({});
     readonly loading = signal(false);
     readonly saving = signal(false);
+    readonly uploadingCookie = signal(false);
     readonly error = signal('');
     readonly notice = signal('');
 
@@ -122,7 +121,6 @@ export class AdminSettingsPageComponent implements OnInit {
         if (key === 'jellyfin_watched_user') return 'The Jellyfin account whose watched and favorite states FinTube reconciles.';
         if (key === 'jellyfin_watched_user') return 'Exact Jellyfin username or user ID whose played state should be reconciled.';
         if (key === 'youtube_mark_watched') return 'Uses yt-dlp and the separate watched-state cookie file to update the selected YouTube account. Failures are retried on later syncs.';
-        if (key === 'cookie_file') return 'Optional Netscape cookies.txt used only while fetching YouTube media.';
         return this.secretSettings.has(key) ? 'Secret · stored server-side and never shown to normal users' : 'Administrator-controlled global value';
     }
 
@@ -145,6 +143,27 @@ export class AdminSettingsPageComponent implements OnInit {
             error: (error: unknown) => {
                 this.saving.set(false);
                 this.error.set(this.messageFor(error, 'Could not save settings.'));
+            }
+        });
+    }
+
+    uploadGlobalCookie(event: Event): void {
+        const input = event.target as HTMLInputElement;
+        const file = input.files?.item(0);
+        if (!file) return;
+        this.error.set('');
+        this.notice.set('');
+        this.uploadingCookie.set(true);
+        this.adminApi.uploadGlobalCookieFile({file}).subscribe({
+            next: () => {
+                this.uploadingCookie.set(false);
+                input.value = '';
+                this.notice.set('Global YouTube cookie file uploaded. It will be used for yt-dlp media requests.');
+            },
+            error: (error: unknown) => {
+                this.uploadingCookie.set(false);
+                input.value = '';
+                this.error.set(this.messageFor(error, 'Could not upload the global cookie file.'));
             }
         });
     }

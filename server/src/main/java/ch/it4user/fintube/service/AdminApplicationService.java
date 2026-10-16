@@ -101,8 +101,8 @@ public class AdminApplicationService {
         });
     }
 
-    /** Store the history account's cookie file in FinTube's private data directory. */
-    public void uploadYouTubeWatchCookie(HttpServletRequest request, MultipartFile file) {
+    /** Store global yt-dlp cookies in FinTube's private data directory. */
+    public void uploadGlobalCookieFile(HttpServletRequest request, MultipartFile file) {
         database(() -> {
             AuthService.Principal admin = authorization.requireAdmin(request);
             if (file == null || file.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Choose a cookies.txt file first");
@@ -120,10 +120,10 @@ public class AdminApplicationService {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Upload a Netscape-format cookies.txt file");
             }
             Path secrets = paths.root.resolve("secrets").toAbsolutePath().normalize();
-            Path destination = secrets.resolve("youtube-watch-history-cookies.txt");
+            Path destination = secrets.resolve("youtube-cookies.txt");
             try {
                 Files.createDirectories(secrets);
-                Path temporary = Files.createTempFile(secrets, "youtube-watch-history-", ".tmp");
+                Path temporary = Files.createTempFile(secrets, "youtube-cookies-", ".tmp");
                 try {
                     Files.write(temporary, contents);
                     try {
@@ -145,8 +145,8 @@ public class AdminApplicationService {
                 throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
                         "Could not store uploaded cookie file");
             }
-            settings.save("youtube_watch_cookie_file", destination.toString(), true);
-            audit.event("ADMIN_YOUTUBE_WATCH_COOKIE_UPLOADED", Map.of("userId", admin.id()));
+            settings.save("cookie_file", destination.toString(), true);
+            audit.event("ADMIN_GLOBAL_YOUTUBE_COOKIE_UPLOADED", Map.of("userId", admin.id()));
             return null;
         });
     }

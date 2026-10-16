@@ -188,8 +188,29 @@ class OwnershipIsolationTest {
         mvc.perform(get("/api/admin/settings").cookie(session)).andExpect(status().isOk())
                 .andExpect(result -> assertThat(result.getResponse().getContentAsString()).contains(SettingsPolicy.MASK).doesNotContain("should-not-be-returned"));
         mvc.perform(patch("/api/admin/settings").cookie(session).contentType(APPLICATION_JSON)
-                        .content("{\"unexpected_secret\":\"value\"}"))
+                .content("{\"unexpected_secret\":\"value\"}"))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void adminsCanUploadTheGlobalYtDlpCookieFile() throws Exception {
+        String username = unique("global-cookie-admin");
+        Cookie session = register(username, "global cookie administrator password");
+        UserEntity admin = users.findByUsername(username).orElseThrow();
+        admin.setRole("ADMIN");
+        users.save(admin);
+        MockMultipartFile file = new MockMultipartFile("file", "cookies.txt", "text/plain",
+                "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tvalue\n".getBytes());
+
+        mvc.perform(multipart("/api/admin/cookie-file").file(file).cookie(session))
+                .andExpect(status().isOk());
+
+        Path stored = paths.root.resolve("secrets/youtube-cookies.txt");
+        assertThat(Files.readString(stored)).contains("Netscape HTTP Cookie File");
+        assertThat(settings.value("cookie_file")).isEqualTo(stored.toString());
+        mvc.perform(get("/api/admin/settings").cookie(session)).andExpect(status().isOk())
+                .andExpect(result -> assertThat(result.getResponse().getContentAsString())
+                        .contains(SettingsPolicy.MASK).doesNotContain(stored.toString()));
     }
 
     @Test
