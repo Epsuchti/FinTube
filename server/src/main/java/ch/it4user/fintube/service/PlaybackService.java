@@ -5,7 +5,9 @@ import ch.it4user.fintube.media.FragmentManager;
 import ch.it4user.fintube.media.IndexedEditStore;
 import ch.it4user.fintube.media.IndexedEdits;
 import ch.it4user.fintube.media.IndexedMediaService;
+import ch.it4user.fintube.media.MediaNotReadyException;
 import ch.it4user.fintube.media.MediaSourceService;
+import ch.it4user.fintube.web.MediaNotReadyResponseException;
 import ch.it4user.fintube.media.SponsorRenditionService;
 import ch.it4user.fintube.integration.JellyfinSyncService;
 import ch.it4user.fintube.core.SettingsService;
@@ -147,6 +149,9 @@ public class PlaybackService {
                     .append("index.m3u8?token=").append(encode(resolvedToken)).append('\n').toString();
         } catch (ResponseStatusException e) {
             throw e;
+        } catch (MediaNotReadyException e) {
+            LOG.info("event=PLAYBACK_MANIFEST_NOT_READY video={} reason={}", video, e.getMessage());
+            throw new MediaNotReadyResponseException("media is not available yet, retry later", e.retryAfter().toSeconds());
         } catch (Exception e) {
             LOG.error("event=PLAYBACK_MANIFEST_FAILED video={} reason={}", video, e.getMessage(), e);
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "playback manifest could not be resolved", e);
