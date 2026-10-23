@@ -273,6 +273,7 @@ public class YouTubeSyncService {
         for (VideoEntity video : videos.findAllById(ids)) existingIds.add(video.getVideoId());
         List<String> metadataIds = ids.stream().filter(id -> !existingIds.contains(id)).toList();
         Set<String> returned = new HashSet<>();
+        String upcomingPublished = null;
         for (int start = 0; start < metadataIds.size(); start += 50) {
           int end = Math.min(metadataIds.size(), start + 50);
           String batch = String.join(",", metadataIds.subList(start, end));
@@ -281,10 +282,18 @@ public class YouTubeSyncService {
             String videoId = video.path("id").asText();
             if (videoId.isBlank()) continue;
             returned.add(videoId);
+            if (isUpcoming(video)) {
+              upcomingPublished = minPublished(upcomingPublished, video.path("snippet").path("publishedAt").asText(""));
+              continue;
+            }
             if (!acceptedIncrementalVideo(video, regularLimit, shortLimit, liveStreamLimit)) continue;
             if (upsertVideo(video, channel)) count++;
           }
         }
+
+        // Upcoming streams are skipped. The cursor stops at the earliest one so the next
+        // sync rediscovers it after it goes live.
+        newestPublished = minPublished(newestPublished, upcomingPublished);
 
         // A candidate can disappear between playlistItems.list and videos.list because
         // it was deleted, made private, or rejected.
@@ -419,6 +428,7 @@ public class YouTubeSyncService {
     List<JsonNode> selected = new ArrayList<>();
     int[] counts = new int[3];
     String newestPublished = null;
+    String upcomingPublished = null;
     String page = null;
     int pages = 0;
     do {
@@ -444,12 +454,16 @@ public class YouTubeSyncService {
       for (JsonNode item : playlistItems) {
         JsonNode video = detailsById.get(playlistVideoId(item));
         if (video == null) continue;
+        if (isUpcoming(video)) {
+          upcomingPublished = minPublished(upcomingPublished, video.path("snippet").path("publishedAt").asText(""));
+          continue;
+        }
         if (acceptInitialVideo(video, counts, limits)) selected.add(video);
       }
       page = root.path("nextPageToken").asText("");
       pages++;
     } while (!limitsFilled(counts, limits) && !page.isBlank() && pages < MAX_INCREMENTAL_PAGES);
-    return new InitialDiscovery(List.copyOf(selected), newestPublished);
+    return new InitialDiscovery(List.copyOf(selected), minPublished(newestPublished, upcomingPublished));
   }
 
   private List<JsonNode> discoverIncremental(YouTubeChannelEntity channelEntity, String key,
@@ -590,6 +604,11 @@ public class YouTubeSyncService {
     if (isPastLiveStream(video)) return liveStreamLimit > 0;
     if (isShort(video, duration)) return shortLimit > 0;
     return regularLimit > 0;
+  }
+
+  /** Scheduled but not started. yt-dlp can't play these yet, so they are not imported. */
+  static boolean isUpcoming(JsonNode video) {
+    return "upcoming".equalsIgnoreCase(video.path("snippet").path("liveBroadcastContent").asText(""));
   }
 
   private static boolean isPastLiveStream(JsonNode video) {
@@ -1025,6 +1044,13 @@ public class YouTubeSyncService {
   }
 
   private static int number(String value) { return value == null ? 0 : Integer.parseInt(value); }
+
+  private static String minPublished(String current, String candidate) {
+    if (candidate == null || candidate.isBlank()) return current;
+    if (current == null || current.isBlank()) return candidate;
+    try { return Instant.parse(candidate).isBefore(Instant.parse(current)) ? candidate : current; }
+    catch (DateTimeParseException e) { return candidate.compareTo(current) < 0 ? candidate : current; }
+  }
 
   private static String maxPublished(String current, String candidate) {
     if (candidate == null || candidate.isBlank()) return current;

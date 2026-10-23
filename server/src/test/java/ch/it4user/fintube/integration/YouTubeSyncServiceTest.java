@@ -26,6 +26,15 @@ class YouTubeSyncServiceTest {
     }
 
     @Test
+    void recognizesUpcomingStreamsAsNotImportable() throws Exception {
+        assertThat(YouTubeSyncService.isUpcoming(
+                JSON.readTree("{\"snippet\":{\"liveBroadcastContent\":\"upcoming\"}}"))).isTrue();
+        assertThat(YouTubeSyncService.isUpcoming(
+                JSON.readTree("{\"snippet\":{\"liveBroadcastContent\":\"live\"}}"))).isFalse();
+        assertThat(YouTubeSyncService.isUpcoming(JSON.readTree("{\"snippet\":{\"liveBroadcastContent\":\"none\"}}"))).isFalse();
+    }
+
+    @Test
     void rejectsIncrementalShortsWhenShortImportIsDisabled() throws Exception {
         assertThat(YouTubeSyncService.acceptedIncrementalVideo(
                 JSON.readTree("{\"contentDetails\":{\"duration\":\"PT2M3S\"},\"snippet\":{}}"), 1, 0, 1))
