@@ -273,6 +273,7 @@ public class YouTubeSyncService {
         for (VideoEntity video : videos.findAllById(ids)) existingIds.add(video.getVideoId());
         List<String> metadataIds = ids.stream().filter(id -> !existingIds.contains(id)).toList();
         Set<String> returned = new HashSet<>();
+        String upcomingPublished = null;
         for (int start = 0; start < metadataIds.size(); start += 50) {
           int end = Math.min(metadataIds.size(), start + 50);
           String batch = String.join(",", metadataIds.subList(start, end));
@@ -281,10 +282,18 @@ public class YouTubeSyncService {
             String videoId = video.path("id").asText();
             if (videoId.isBlank()) continue;
             returned.add(videoId);
+            if (isUpcoming(video)) {
+              upcomingPublished = minPublished(upcomingPublished, video.path("snippet").path("publishedAt").asText(""));
+              continue;
+            }
             if (!acceptedIncrementalVideo(video, regularLimit, shortLimit, liveStreamLimit)) continue;
             if (upsertVideo(video, channel)) count++;
           }
         }
+
+        // Upcoming streams are skipped. The cursor stops at the earliest one so the next
+        // sync rediscovers it after it goes live.
+        newestPublished = minPublished(newestPublished, upcomingPublished);
 
         // A candidate can disappear between playlistItems.list and videos.list because
         // it was deleted, made private, or rejected.
@@ -419,6 +428,7 @@ public class YouTubeSyncService {
     List<JsonNode> selected = new ArrayList<>();
     int[] counts = new int[3];
     String newestPublished = null;
+    String upcomingPublished = null;
     String page = null;
     int pages = 0;
     do {
@@ -444,12 +454,16 @@ public class YouTubeSyncService {
       for (JsonNode item : playlistItems) {
         JsonNode video = detailsById.get(playlistVideoId(item));
         if (video == null) continue;
+        if (isUpcoming(video)) {
+          upcomingPublished = minPublished(upcomingPublished, video.path("snippet").path("publishedAt").asText(""));
+          continue;
+        }
         if (acceptInitialVideo(video, counts, limits)) selected.add(video);
       }
       page = root.path("nextPageToken").asText("");
       pages++;
     } while (!limitsFilled(counts, limits) && !page.isBlank() && pages < MAX_INCREMENTAL_PAGES);
-    return new InitialDiscovery(List.copyOf(selected), newestPublished);
+    return new InitialDiscovery(List.copyOf(selected), minPublished(newestPublished, upcomingPublished));
   }
 
   private List<JsonNode> discoverIncremental(YouTubeChannelEntity channelEntity, String key,
@@ -590,6 +604,11 @@ public class YouTubeSyncService {
     if (isPastLiveStream(video)) return liveStreamLimit > 0;
     if (isShort(video, duration)) return shortLimit > 0;
     return regularLimit > 0;
+  }
+
+  /** Scheduled but not started. yt-dlp can't play these yet, so they are not imported. */
+  static boolean isUpcoming(JsonNode video) {
+    return "upcoming".equalsIgnoreCase(video.path("snippet").path("liveBroadcastContent").asText(""));
   }
 
   private static boolean isPastLiveStream(JsonNode video) {
@@ -819,7 +838,7 @@ public class YouTubeSyncService {
     UserEntity userEntity = users.findById(user).orElse(null);
     YouTubeChannelEntity channelEntity = channels.findById(entity.getChannelId()).orElse(null);
     if (userEntity == null || channelEntity == null) return;
-    writeLibrary(user, userEntity.getFilesystemSlug(), channelEntity.getName(),
+    writeLibrary(user, userEntity.getFilesystemSlug(), channelEntity.getName(), contentSubfolder(entity),
         channelEntity.getThumbnailUrl(), video, entity.getTitle(), entity.getDescription(), entity.getPublishedAt(),
         entity.getDurationSeconds(), entity.getThumbnailUrl(), entity.getAvailability(), true);
   }
@@ -829,7 +848,7 @@ public class YouTubeSyncService {
     VideoEntity entity = videos.findById(video).orElse(null);
     UserEntity userEntity = users.findById(user).orElse(null);
     if (entity == null || userEntity == null) return;
-    writeLibrary(user, userEntity.getFilesystemSlug(), playlistName, "", video, entity.getTitle(),
+    writeLibrary(user, userEntity.getFilesystemSlug(), playlistName, "", "", video, entity.getTitle(),
         entity.getDescription(), entity.getPublishedAt(), entity.getDurationSeconds(), entity.getThumbnailUrl(),
         entity.getAvailability(), false);
   }
@@ -840,7 +859,16 @@ public class YouTubeSyncService {
     if (!id.isBlank()) linkStoredVideo(user, id);
   }
 
-  private void writeLibrary(long user, String slug, String folderName, String folderThumbnail,
+  /** Subfolder of the channel folder that holds this video: Shorts and past live streams are kept apart. */
+  private static String contentSubfolder(VideoEntity video) {
+    return switch (category(video)) {
+      case 2 -> "Live";
+      case 1 -> "Shorts";
+      default -> "";
+    };
+  }
+
+  private void writeLibrary(long user, String slug, String folderName, String subfolder, String folderThumbnail,
                             String video,
                             String title, String description, String published, int duration,
                             String thumbnail, String availability, boolean migrateExisting) throws Exception {
@@ -849,8 +877,9 @@ public class YouTubeSyncService {
       throw new SecurityException("invalid user filesystem root");
     Path channelPath = root.resolve(clean(folderName)).normalize();
     if (!channelPath.startsWith(root) || channelPath.equals(root)) throw new SecurityException("invalid channel library path");
-    Path path = channelPath.resolve(video).normalize();
-    if (!path.startsWith(root) || path.equals(root)) throw new SecurityException("invalid library path");
+    Path path = (subfolder == null || subfolder.isEmpty() ? channelPath : channelPath.resolve(subfolder))
+        .resolve(video).normalize();
+    if (!path.startsWith(channelPath) || path.equals(channelPath)) throw new SecurityException("invalid library path");
     UserVideoId linkId = new UserVideoId(user, video);
     UserVideoEntity link = userVideos.findById(linkId).orElse(null);
     boolean newLink = link == null;
@@ -1026,6 +1055,13 @@ public class YouTubeSyncService {
 
   private static int number(String value) { return value == null ? 0 : Integer.parseInt(value); }
 
+  private static String minPublished(String current, String candidate) {
+    if (candidate == null || candidate.isBlank()) return current;
+    if (current == null || current.isBlank()) return candidate;
+    try { return Instant.parse(candidate).isBefore(Instant.parse(current)) ? candidate : current; }
+    catch (DateTimeParseException e) { return candidate.compareTo(current) < 0 ? candidate : current; }
+  }
+
   private static String maxPublished(String current, String candidate) {
     if (candidate == null || candidate.isBlank()) return current;
     if (current == null || current.isBlank()) return candidate;
@@ -1064,7 +1100,10 @@ public class YouTubeSyncService {
   private static void deleteIfEmpty(Path path, Path root) {
     if (path == null || root == null || path.equals(root) || !path.startsWith(root)) return;
     try (DirectoryStream<Path> entries = Files.newDirectoryStream(path)) {
-      if (!entries.iterator().hasNext()) Files.deleteIfExists(path);
+      if (!entries.iterator().hasNext()) {
+        Files.deleteIfExists(path);
+        deleteIfEmpty(path.getParent(), root);
+      }
     } catch (Exception ignored) { }
   }
 

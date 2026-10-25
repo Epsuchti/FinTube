@@ -36,6 +36,12 @@ public class ExceptionLoggingResolver implements HandlerExceptionResolver {
                     request.getMethod(), request.getRequestURI(), handlerName, exception.getMessage());
             return null;
         }
+        if (exception instanceof MediaNotReadyResponseException notReady) {
+            LOG.info("event=HTTP_MEDIA_NOT_READY method={} path={} status={} retryAfter={}",
+                    request.getMethod(), request.getRequestURI(), notReady.getStatusCode(),
+                    notReady.getHeaders().getFirst("Retry-After"));
+            return null;
+        }
         if (exception instanceof ResponseStatusException statusException) {
             LOG.error("Request failed: method={} path={} status={} reason={} handler={}",
                     request.getMethod(), request.getRequestURI(), statusException.getStatusCode(),

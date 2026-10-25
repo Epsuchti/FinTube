@@ -334,6 +334,9 @@ public class MediaSourceService {
     }
     if (result.exitCode() != 0) {
       String detail = probeError(result.stderr());
+      if (MediaNotReadyException.matches(detail)) {
+        throw new MediaNotReadyException("media is not available yet: " + detail);
+      }
       throw new IllegalStateException("yt-dlp probe failed with exit code " + result.exitCode()
           + (detail.isBlank() ? "" : ": " + detail));
     }
@@ -377,7 +380,10 @@ public class MediaSourceService {
     byte[] output = stdout.join();
     byte[] error = stderr.join();
     long durationMs = (System.nanoTime() - started) / 1_000_000;
-    if (exitCode != 0) {
+    if (exitCode != 0 && MediaNotReadyException.matches(probeError(error))) {
+      LOG.info("event=YTDLP_PROBE_NOT_READY video={} reason={} durationMs={} stderr={}",
+          video, reason, durationMs, probeError(error));
+    } else if (exitCode != 0) {
       LOG.warn("event=YTDLP_PROBE_FAILED video={} reason={} exitCode={} durationMs={} stdoutBytes={} stderr={}",
           video, reason, exitCode, durationMs, output.length, probeError(error));
     } else {
