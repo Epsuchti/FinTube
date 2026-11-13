@@ -59,7 +59,7 @@ public class SponsorStreamCopy {
                 "-i", input.toAbsolutePath().toString(), "-map", "0:v:0", "-c:v", "copy",
                 "-copyinkf", "-frames:v", "1", "-bsf:v", "h264_mp4toannexb", "-f", "h264", accessUnit.toString()));
         if (Files.size(accessUnit) > 16 * 1024 * 1024) throw new IOException("unexpectedly large access unit");
-        byte[] bytes = Files.readAllBytes(accessUnit);
+        byte[] bytes = HeapFiles.readAllBytes(accessUnit);
         boolean sps = false, pps = false, idr = false;
         StringBuilder headers = new StringBuilder();
         for (int position = 0; position + 4 < bytes.length; position++) {
