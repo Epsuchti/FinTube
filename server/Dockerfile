@@ -13,4 +13,8 @@ COPY ${JAR_FILE} app.jar
 ENV SPRING_PROFILES_ACTIVE=prod
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD curl --fail --silent http://localhost:8080/actuator/health || exit 1
-ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/app.jar"]
+# Do not keep per-thread NIO temporary direct buffers larger than 256 KiB. Without this cap every
+# thread that once read or wrote a large heap array through a FileChannel pins a direct buffer of
+# that size, until MaxDirectMemorySize runs out and H2 compaction fails with
+# "OutOfMemoryError: Direct buffer memory". JAVA_OPTS comes last so it can still override this.
+ENTRYPOINT ["sh", "-c", "java -Djdk.nio.maxCachedBufferSize=262144 $JAVA_OPTS -jar /app/app.jar"]

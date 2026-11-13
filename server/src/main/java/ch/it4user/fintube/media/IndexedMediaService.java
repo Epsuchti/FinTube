@@ -90,13 +90,13 @@ public class IndexedMediaService {
                           String format, boolean high) throws Exception {
     String original = cacheFormat(source, track.id());
     return fragments.produce(video, format, "s" + index, high, (target, owner) -> {
-      byte[] init = Files.readAllBytes(path(video, source, track, original, null, high));
+      byte[] init = HeapFiles.readAllBytes(path(video, source, track, original, null, high));
       Fmp4Samples.Track parameters = Fmp4Samples.track(init);
       List<Fmp4Samples.Sample> samples = new ArrayList<>();
       for (int source0 : output.sources()) {
         Path raw = path(video, source, track, original, source0, high);
         long absolute = "webm".equals(track.container()) ? 0 : track.segments().get(source0).start();
-        samples.addAll(Fmp4Samples.samples(Files.readAllBytes(raw), absolute, parameters));
+        samples.addAll(Fmp4Samples.samples(HeapFiles.readAllBytes(raw), absolute, parameters));
       }
       if (samples.isEmpty()) throw new IOException("source segment has no samples");
       List<Fmp4Samples.Sample> kept = IndexedEdits.select(samples, output, track.audio(), parameters.timescale());
@@ -151,8 +151,8 @@ public class IndexedMediaService {
       Path clusterSource = cluster;
       if (index == 0) clusterSource = fragments.getRange(video, format, "c0", track.url(), segment.start(), segment.end(), high);
       else fragments.download(video, format, "c" + index, track.url(), segment.start(), segment.end(), cluster, high, owner, "cluster");
-      try (var out = Files.newOutputStream(input)) {
-        out.write(unknownSizeSegment(Files.readAllBytes(header)));
+      try (var out = HeapFiles.newOutputStream(input)) {
+        out.write(unknownSizeSegment(HeapFiles.readAllBytes(header)));
         Files.copy(clusterSource, out);
       }
       runFfmpeg(List.of(ffmpeg(), "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
@@ -160,7 +160,7 @@ public class IndexedMediaService {
           "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
           "-video_track_timescale", Long.toString(WEBM_VIDEO_TIMESCALE),
           "-fragment_index", Integer.toString(index + 1), output.toString()));
-      Fmp4 result = split(Files.readAllBytes(output));
+      Fmp4 result = split(HeapFiles.readAllBytes(output));
       setDecodeTime(result.media(), Math.round(segment.startSeconds() * WEBM_VIDEO_TIMESCALE));
       LOG.debug("event=INDEXED_WEBM_SEGMENT_REPACKAGED video={} format={} segment={} clusterBytes={} outputBytes={} decodeTimeSeconds={} durationMs={}",
           video, format, index, segment.length(), result.media().length,

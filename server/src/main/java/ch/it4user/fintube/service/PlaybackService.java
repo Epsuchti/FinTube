@@ -2,6 +2,7 @@ package ch.it4user.fintube.service;
 
 import ch.it4user.fintube.media.BackgroundFillService;
 import ch.it4user.fintube.media.FragmentManager;
+import ch.it4user.fintube.media.HeapFiles;
 import ch.it4user.fintube.media.IndexedEditStore;
 import ch.it4user.fintube.media.IndexedEdits;
 import ch.it4user.fintube.media.IndexedMediaService;
@@ -387,8 +388,8 @@ public class PlaybackService {
                 Path init0 = "video".equals(track) ? fragments.get(video, cacheFormat, "init", source.videoInit(), true) : null;
                 Path shifted = fragments.produce(video, editedFormat, key, true, (target, owner) -> {
                     Path out = FragmentManager.temporary(target);
-                    if (init0 != null) Files.write(out, IndexedMediaService.shiftFmp4(Files.readAllBytes(init0),
-                            Files.readAllBytes(original), index + 1, removed));
+                    if (init0 != null) Files.write(out, IndexedMediaService.shiftFmp4(HeapFiles.readAllBytes(init0),
+                            HeapFiles.readAllBytes(original), index + 1, removed));
                     else if ("video/mp2t".equals(type)) indexed.shiftTs(original, out, removed);
                     else throw new java.io.IOException("audio segment cannot be retimed: " + type);
                     return out;
