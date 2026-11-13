@@ -31,4 +31,13 @@ public interface CacheEntryRepository extends JpaRepository<CacheEntryEntity, St
     int markComplete(@Param("videoId") String videoId,
                      @Param("completedAt") String completedAt,
                      @Param("lastAccessedAt") String lastAccessedAt);
+
+    /**
+     * Lease counts only describe streams of the running process. Counts left by a
+     * stopped process would protect their videos from eviction forever.
+     */
+    @Modifying
+    @Transactional
+    @Query("update CacheEntryEntity entry set entry.activeReaders = 0, entry.activeWriters = 0 where entry.activeReaders <> 0 or entry.activeWriters <> 0")
+    int resetActiveLeases();
 }

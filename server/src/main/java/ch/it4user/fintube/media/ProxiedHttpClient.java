@@ -10,6 +10,11 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.time.Duration;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
@@ -20,6 +25,8 @@ import org.springframework.stereotype.Component;
 @Component
 public class ProxiedHttpClient {
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(20);
+    static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(60);
+    private static final Duration DEADLINE_GRACE = Duration.ofSeconds(30);
 
     private final SettingsService settings;
     private final HttpClient direct;
@@ -40,9 +47,36 @@ public class ProxiedHttpClient {
         this.direct = direct;
     }
 
+    /**
+     * Send with a bounded wait. java.net.http has no read timeout, so a request
+     * without its own timeout gets {@link #DEFAULT_TIMEOUT}, and the whole call is
+     * capped by an outer deadline. For buffered bodies (String, byte[]) that
+     * covers the full transfer; for streaming bodies it covers the headers and
+     * the caller must guard reads itself (see FragmentManager.IdleWatchdog).
+     */
     public <T> HttpResponse<T> send(HttpRequest request, HttpResponse.BodyHandler<T> handler)
             throws IOException, InterruptedException {
-        return client().send(request, handler);
+        HttpRequest effective = request.timeout().isPresent() ? request
+                : HttpRequest.newBuilder(request, (name, value) -> true).timeout(DEFAULT_TIMEOUT).build();
+        Duration timeout = effective.timeout().orElse(DEFAULT_TIMEOUT);
+        Duration deadline = timeout.plus(timeout.compareTo(DEADLINE_GRACE) < 0 ? timeout : DEADLINE_GRACE);
+        CompletableFuture<HttpResponse<T>> pending = client().sendAsync(effective, handler);
+        try {
+            return pending.get(deadline.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            pending.cancel(true);
+            throw new HttpTimeoutException("no complete response from " + effective.uri().getHost()
+                    + " within " + deadline.toSeconds() + " seconds");
+        } catch (InterruptedException e) {
+            pending.cancel(true);
+            throw e;
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof IOException io) throw io;
+            if (cause instanceof RuntimeException runtime) throw runtime;
+            if (cause instanceof Error error) throw error;
+            throw new IOException(cause);
+        }
     }
 
     public String proxyArgument() {

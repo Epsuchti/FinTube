@@ -271,7 +271,14 @@ public class YouTubeSyncService {
         }
         Set<String> existingIds = new HashSet<>();
         for (VideoEntity video : videos.findAllById(ids)) existingIds.add(video.getVideoId());
-        List<String> metadataIds = ids.stream().filter(id -> !existingIds.contains(id)).toList();
+        List<String> newIds = ids.stream().filter(id -> !existingIds.contains(id)).toList();
+        // Streams stored by older builds while they were still live have no duration and were filed as
+        // regular videos. Fetch them again so they move into the Live folder once the stream has ended.
+        List<String> recheckIds = videos.findByChannelIdAndIsLiveStreamAndDurationSeconds(channel, 0, 0).stream()
+            .map(VideoEntity::getVideoId).filter(id -> !newIds.contains(id)).toList();
+        Set<String> recheck = new HashSet<>(recheckIds);
+        List<String> metadataIds = new ArrayList<>(newIds);
+        metadataIds.addAll(recheckIds);
         Set<String> returned = new HashSet<>();
         String upcomingPublished = null;
         for (int start = 0; start < metadataIds.size(); start += 50) {
@@ -282,8 +289,14 @@ public class YouTubeSyncService {
             String videoId = video.path("id").asText();
             if (videoId.isBlank()) continue;
             returned.add(videoId);
-            if (isUpcoming(video)) {
-              upcomingPublished = minPublished(upcomingPublished, video.path("snippet").path("publishedAt").asText(""));
+            if (isNotFinished(video)) {
+              if (!recheck.contains(videoId)) {
+                upcomingPublished = minPublished(upcomingPublished, video.path("snippet").path("publishedAt").asText(""));
+              }
+              continue;
+            }
+            if (recheck.contains(videoId)) {
+              upsertVideo(video, channel);
               continue;
             }
             if (!acceptedIncrementalVideo(video, regularLimit, shortLimit, liveStreamLimit)) continue;
@@ -291,8 +304,8 @@ public class YouTubeSyncService {
           }
         }
 
-        // Upcoming streams are skipped. The cursor stops at the earliest one so the next
-        // sync rediscovers it after it goes live.
+        // Upcoming and still running streams are skipped. The cursor stops at the earliest one so
+        // the next sync rediscovers it once it has ended and can be filed as a past live stream.
         newestPublished = minPublished(newestPublished, upcomingPublished);
 
         // A candidate can disappear between playlistItems.list and videos.list because
@@ -454,7 +467,7 @@ public class YouTubeSyncService {
       for (JsonNode item : playlistItems) {
         JsonNode video = detailsById.get(playlistVideoId(item));
         if (video == null) continue;
-        if (isUpcoming(video)) {
+        if (isNotFinished(video)) {
           upcomingPublished = minPublished(upcomingPublished, video.path("snippet").path("publishedAt").asText(""));
           continue;
         }
@@ -609,6 +622,15 @@ public class YouTubeSyncService {
   /** Scheduled but not started. yt-dlp can't play these yet, so they are not imported. */
   static boolean isUpcoming(JsonNode video) {
     return "upcoming".equalsIgnoreCase(video.path("snippet").path("liveBroadcastContent").asText(""));
+  }
+
+  /** Currently streaming. Imported only after it ends, so it lands in the Live folder with its final length. */
+  static boolean isLiveNow(JsonNode video) {
+    return "live".equalsIgnoreCase(video.path("snippet").path("liveBroadcastContent").asText(""));
+  }
+
+  static boolean isNotFinished(JsonNode video) {
+    return isUpcoming(video) || isLiveNow(video);
   }
 
   private static boolean isPastLiveStream(JsonNode video) {

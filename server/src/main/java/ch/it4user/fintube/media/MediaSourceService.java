@@ -49,7 +49,7 @@ public class MediaSourceService {
   private static final String DEFAULT_PO_TOKEN_PROVIDER_ARGS = "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416";
   private static final String REMUX_FORMAT_VERSION = "-tsv6";
   private static final String FMP4_FORMAT_VERSION = "-fmp4v1";
-  private static final String INDEXED_FORMAT_VERSION = "-idxv1";
+  private static final String INDEXED_FORMAT_VERSION = "-idxv2";
   private static final long MAX_INDEX_BYTES = 8L * 1024 * 1024;
   // Included in persisted source policy so a selector change invalidates
   // existing, still-unexpired low-quality selections after deployment.
@@ -364,21 +364,23 @@ public class MediaSourceService {
     long started = System.nanoTime();
     LOG.info("event=YTDLP_PROBE_STARTED video={} reason={} command={}", video, reason, displayCommand(command));
     Process process = startProbe(command, bin);
-    CompletableFuture<byte[]> stdout = CompletableFuture.supplyAsync(() -> read(process.getInputStream()));
-    CompletableFuture<byte[]> stderr = CompletableFuture.supplyAsync(() -> read(process.getErrorStream()));
+    // Dedicated reader threads; the shared ForkJoin pool is too small for blocking pipe reads.
+    CompletableFuture<byte[]> stdout = CompletableFuture.supplyAsync(() -> read(process.getInputStream()), ProcessSupport.IO);
+    CompletableFuture<byte[]> stderr = CompletableFuture.supplyAsync(() -> read(process.getErrorStream()), ProcessSupport.IO);
     if (!process.waitFor(PROBE_TIMEOUT.toSeconds(), TimeUnit.SECONDS)) {
-      process.destroyForcibly();
-      process.waitFor(5, TimeUnit.SECONDS);
-      byte[] output = stdout.join();
-      byte[] error = stderr.join();
+      // Kill yt-dlp together with its Node child; a surviving child would keep the
+      // pipes open and make the readers below block forever.
+      ProcessSupport.kill(process);
+      byte[] output = ProcessSupport.await(stdout);
+      byte[] error = ProcessSupport.await(stderr);
       long durationMs = (System.nanoTime() - started) / 1_000_000;
       LOG.warn("event=YTDLP_PROBE_TIMED_OUT video={} reason={} durationMs={} stdoutBytes={} stderr={}",
           video, reason, durationMs, output.length, probeError(error));
       throw new IllegalStateException("yt-dlp probe timed out after " + PROBE_TIMEOUT.toSeconds() + " seconds");
     }
     int exitCode = process.exitValue();
-    byte[] output = stdout.join();
-    byte[] error = stderr.join();
+    byte[] output = ProcessSupport.await(stdout);
+    byte[] error = ProcessSupport.await(stderr);
     long durationMs = (System.nanoTime() - started) / 1_000_000;
     if (exitCode != 0 && MediaNotReadyException.matches(probeError(error))) {
       LOG.info("event=YTDLP_PROBE_NOT_READY video={} reason={} durationMs={} stderr={}",
@@ -677,11 +679,20 @@ public class MediaSourceService {
       }
       compatReason = compat != null ? "added" : h264.isEmpty() ? "no_https_h264_format" : "h264_index_failed";
     }
-    // The H.264 variant is listed first: ffmpeg-based consumers (Jellyfin remux
-    // or transcode) use the first variant, and players that can decode the
-    // higher variant switch up to it on their own.
-    if (compat != null) tracks.add(compat.withId("v0"));
-    tracks.add(primary.withId("v" + tracks.size()));
+    // Jellyfin probes the master playlist with ffprobe and remuxes/transcodes
+    // with ffmpeg; both use the FIRST variant, so the first variant decides
+    // the resolution Jellyfin reports and plays. The user's codec order picks
+    // it: "vp9,h264" leads with the VP9 (up to 2160p) stream, "h264,vp9" leads
+    // with the H.264 (<=1080p) variant for devices without VP9 decoding.
+    // Track ids stay stable (v0 = H.264 variant, v1 = primary) either way.
+    List<String> preferredVideo = codecs(preferences == null ? null : preferences.getPreferredVideoCodecs(),
+        "preferred_video_codecs", List.of("h264", "vp9", "av1"));
+    boolean compatFirst = compat != null
+        && rank("h264", preferredVideo) > rank(primary.codec(), preferredVideo);
+    IndexedTrack compatTrack = compat == null ? null : compat.withId("v0");
+    IndexedTrack primaryTrack = primary.withId(compat == null ? "v0" : "v1");
+    if (compatFirst) { tracks.add(compatTrack); tracks.add(primaryTrack); }
+    else { tracks.add(primaryTrack); if (compatTrack != null) tracks.add(compatTrack); }
     tracks.add(audio.withId("a"));
     String format = primary.formatId() + "+" + audio.formatId() + (compat == null ? "" : "~" + compat.formatId())
         + INDEXED_FORMAT_VERSION;
@@ -689,9 +700,9 @@ public class MediaSourceService {
     for (IndexedTrack track : tracks) expiry = minExpiry(expiry, expiry(track.url()));
     double total = duration > 0 ? duration : primary.duration();
     String codecs = primary.codecs() + "," + audio.codecs();
-    LOG.info("event=MEDIA_SOURCE_INDEXED_SELECTED video={} format={} primary={} audio={} compat={} compatReason={} durationSeconds={} expiresAt={}",
+    LOG.info("event=MEDIA_SOURCE_INDEXED_SELECTED video={} format={} primary={} audio={} compat={} compatReason={} firstVariant={} durationSeconds={} expiresAt={}",
         root.path("id").asText("?"), format, IndexedMediaService.describe(primary), IndexedMediaService.describe(audio),
-        compat == null ? "none" : IndexedMediaService.describe(compat), compatReason, Math.round(total), expiry);
+        compat == null ? "none" : IndexedMediaService.describe(compat), compatReason, tracks.getFirst().id(), Math.round(total), expiry);
     return new Source(format, primary.formatId(), audio.formatId(), List.of(), (int) Math.ceil(total),
         targetDuration(tracks), primary.codec(), "aac", primary.container(), expiry, false,
         primary.width(), primary.height(), primary.fps(), primary.bandwidth() + audio.bandwidth(), codecs, null,

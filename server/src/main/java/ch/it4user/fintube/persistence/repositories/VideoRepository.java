@@ -32,6 +32,9 @@ public interface VideoRepository extends JpaRepository<VideoEntity, String> {
       """, nativeQuery = true)
   List<CacheMetadataView> findCacheMetadataByVideoIds(@Param("videoIds") Collection<String> videoIds);
 
+  List<VideoEntity> findByChannelIdAndIsLiveStreamAndDurationSeconds(
+      String channelId, int isLiveStream, int durationSeconds);
+
   List<VideoEntity> findByChannelIdAndVideoIdIn(String channelId, Collection<String> videoIds);
 
   @Query("select v.videoId from VideoEntity v "

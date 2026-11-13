@@ -209,9 +209,9 @@ YouTube now publishes most media as single HTTPS files per quality (VP9 in WebM,
 - Playback starts after the first ~5-second segment and seeking fetches only the needed segment.
 - H.264, AV1 and AAC segments are the original bytes. VP9 segments are stream-copied from WebM into fMP4 (no decoding or encoding, a few milliseconds of CPU per segment).
 - Audio is always AAC-LC, so no client needs an audio transcode.
-- When the selected video is VP9 or AV1, the playlist also offers H.264 (up to 1080p) as a first, compatible variant. Each player then picks the best variant it can decode: Android/Google TV/Fire TV, Chrome-based and recent smart TVs use VP9 up to 4K; Apple's native player (iPhone, iPad, Apple TV) uses H.264. Disable this with `playback_compat_variant=false` if you only want the VP9 stream.
+- When the selected video is VP9 or AV1, the playlist also offers H.264 (up to 1080p) as a compatibility variant. Jellyfin probes and remuxes/transcodes with ffmpeg, which always uses the **first** variant, so the order of your codec list decides what Jellyfin reports and plays: with `vp9,h264` the VP9 stream (up to 4K) comes first; with `h264,vp9` the H.264 ≤1080p variant comes first. Disable the extra variant with `playback_compat_variant=false` if you only want the VP9 stream.
 
-**Recommended for "best quality that plays everywhere":** Media quality `2160`, video codecs `vp9,h264`, audio codecs `aac`. In Jellyfin, leave clients on **Auto/Maximum** quality and keep *Allow video playback that requires conversion without re-encoding* enabled. If Jellyfin still transcodes on a device, check its **Dashboard → Activity**: a transcode reason of *VideoCodecNotSupported* means that device cannot play VP9 and should use the H.264 variant (Apple native player does so automatically).
+**Recommended for 4K:** Media quality `2160`, video codecs `vp9,h264`, audio codecs `aac` (devices without VP9 decoding then get a Jellyfin transcode; use `h264,vp9` instead if most of your devices are Apple). After changing the codec order, run *Refresh metadata → Replace all metadata* on the library in Jellyfin so it re-probes the streams. In Jellyfin, leave clients on **Auto/Maximum** quality and keep *Allow video playback that requires conversion without re-encoding* enabled. If Jellyfin still transcodes on a device, check its **Dashboard → Activity**: a transcode reason of *VideoCodecNotSupported* means that device cannot play VP9 and should use the H.264 variant (Apple native player does so automatically).
 
 ### SponsorBlock
 
@@ -290,7 +290,7 @@ Every playback decision is logged with an `event=` key; follow them with `docker
 | `MEDIA_SOURCE_HLS_SELECTED`, `MEDIA_SOURCE_SINGLE_SEGMENT_FALLBACK`, `MEDIA_SOURCE_LOW_COMPATIBILITY_FALLBACK` | The older or last-resort paths were used instead. |
 | `SPONSOR_SEGMENTS_LOADED`, `SPONSOR_INDEXED_CUT_PLANNED` / `…_RETAINED`, `SPONSOR_INDEXED_PLAN_READY` | SponsorBlock data, each cut (including how much sponsor is left) and why a sponsor was kept. |
 | `SPONSOR_NOTIFY_SENT` / `SPONSOR_NOTIFY_UNSUPPORTED` / `SPONSOR_NOTIFY_NO_SESSION` | Whether the on-screen SponsorBlock message reached a Jellyfin client. |
-| `PLAYBACK_INDEXED_TRACK_REQUESTED` | Which variant the player actually picked (`v0` = H.264, `v1` = VP9/AV1) and which client asked. |
+| `PLAYBACK_INDEXED_TRACK_REQUESTED` | Which variant the player actually picked (`v0` = H.264 variant, `v1` = VP9/AV1; `MEDIA_SOURCE_INDEXED_SELECTED firstVariant=` shows which one Jellyfin uses) and which client asked. |
 | `PLAYBACK_INDEXED_SEGMENT_SLOW`, `MEDIA_FRAGMENT_DOWNLOAD_SLOW` | A segment took more than 3 s to deliver or to download from YouTube. Normal per-segment downloads are only logged at debug level. |
 | `MEDIA_FILE_DOWNLOAD_STARTED`, `MEDIA_FILE_STREAMS` | Downloads: the yt-dlp format selector used, the resulting codecs and whether anything is re-encoded. |
 

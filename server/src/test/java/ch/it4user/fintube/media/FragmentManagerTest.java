@@ -421,6 +421,26 @@ class FragmentManagerTest {
   }
 
   @Test
+  void h264FirstCodecOrderKeepsTheCompatibilityVariantFirst() throws Exception {
+    when(settings.value("stream_quality")).thenReturn("2160");
+    when(settings.value("preferred_video_codecs")).thenReturn("h264,vp9");
+    MediaSourceService service = new MediaSourceService(settings, mediaSources);
+    String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/adaptive/";
+    var root = new ObjectMapper().readTree("""
+        {"duration":15,"formats":[
+          {"format_id":"137","width":1920,"height":1080,"fps":30,"tbr":4000,"vcodec":"avc1.640028","acodec":"none","ext":"mp4","protocol":"https","url":"%1$sh264.mp4"},
+          {"format_id":"313","width":3840,"height":2160,"fps":30,"tbr":18000,"vcodec":"vp9","acodec":"none","ext":"webm","protocol":"https","url":"%1$svp9.webm"},
+          {"format_id":"140","vcodec":"none","acodec":"mp4a.40.2","abr":129,"ext":"m4a","protocol":"https","url":"%1$saac.m4a"}
+        ]}""".formatted(base));
+
+    MediaSourceService.Source selected = service.select(root);
+
+    assertEquals(List.of("v0", "v1", "a"), selected.tracks().stream().map(MediaSourceService.IndexedTrack::id).toList());
+    assertEquals("137", selected.videoTracks().getFirst().formatId(), "h264 is listed first, so the H.264 variant leads");
+    assertEquals("313", selected.track("v1").formatId());
+  }
+
+  @Test
   void personalCodecListIsAWhitelist() throws Exception {
     when(settings.value("stream_quality")).thenReturn("2160");
     MediaSourceService service = new MediaSourceService(settings, mediaSources);
@@ -452,10 +472,11 @@ class FragmentManagerTest {
 
     MediaSourceService.Source selected = service.select(root);
 
-    assertEquals("313+140~137-idxv1", selected.format());
+    assertEquals("313+140~137-idxv2", selected.format());
     assertTrue(selected.indexed());
-    assertEquals(List.of("v0", "v1", "a"), selected.tracks().stream().map(MediaSourceService.IndexedTrack::id).toList());
-    assertEquals("137", selected.track("v0").formatId(), "the H.264 compatibility variant is listed first");
+    assertEquals(List.of("v1", "v0", "a"), selected.tracks().stream().map(MediaSourceService.IndexedTrack::id).toList(),
+        "vp9 is listed before h264, so the 2160p VP9 variant leads and Jellyfin probes/plays it");
+    assertEquals("137", selected.track("v0").formatId());
     assertEquals("313", selected.track("v1").formatId());
     assertEquals("vp09.00.50.08", selected.track("v1").codecs());
     assertEquals("webm", selected.track("v1").container());
@@ -476,6 +497,16 @@ class FragmentManagerTest {
         ]}""".formatted(base));
 
     assertThrows(IllegalStateException.class, () -> service.select(root));
+  }
+
+  @Test
+  void leasesLeftByAStoppedProcessAreResetAtStartup() {
+    cacheEntries.save(new ch.it4user.fintube.persistence.entities.CacheEntryEntity(
+        "STALE1", "137", "PARTIAL", "2026-01-01T00:00:00Z", 2, 1, null));
+    manager().resetStaleLeases();
+    var entry = cacheEntries.findById("STALE1").orElseThrow();
+    assertEquals(0, entry.getActiveReaders());
+    assertEquals(0, entry.getActiveWriters());
   }
 
   private Path get(FragmentManager manager, boolean high) {

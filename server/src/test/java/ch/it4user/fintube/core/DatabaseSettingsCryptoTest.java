@@ -44,6 +44,15 @@ class DatabaseSettingsCryptoTest {
         .containsExactlyInAnyOrder(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
   }
 
+  @Test
+  void savedValuesAreVisibleImmediately() {
+    settings.save("stream_quality", "720", false);
+    assertThat(settings.value("stream_quality")).isEqualTo("720");
+    settings.save("stream_quality", "2160", false);
+    assertThat(settings.value("stream_quality")).isEqualTo("2160");
+    assertThat(settings.values(false)).containsEntry("stream_quality", "2160");
+  }
+
   private static Path dataDirectory() {
     try { return Files.createTempDirectory("fintube-settings-test-"); }
     catch (Exception e) { throw new ExceptionInInitializerError(e); }

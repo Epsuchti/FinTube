@@ -48,4 +48,33 @@ class ProxiedHttpClientTest {
             proxy.stop(0);
         }
     }
+
+    @Test
+    void stalledResponseBodyTimesOutInsteadOfHanging() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        server.createContext("/", exchange -> {
+            exchange.sendResponseHeaders(200, 1_000);
+            exchange.getResponseBody().write("partial".getBytes(StandardCharsets.UTF_8));
+            exchange.getResponseBody().flush();
+            try { release.await(); } catch (InterruptedException ignored) { }
+            exchange.close();
+        });
+        server.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
+        server.start();
+        try {
+            SettingsService settings = mock(SettingsService.class);
+            when(settings.values(false)).thenReturn(Map.of());
+            ProxiedHttpClient client = new ProxiedHttpClient(settings, HttpClient.newHttpClient());
+            long started = System.nanoTime();
+            org.junit.jupiter.api.Assertions.assertThrows(java.io.IOException.class, () -> client.send(
+                    HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/slow"))
+                            .timeout(java.time.Duration.ofSeconds(1)).GET().build(),
+                    HttpResponse.BodyHandlers.ofString()));
+            assertTrue(java.time.Duration.ofNanos(System.nanoTime() - started).toSeconds() < 10);
+        } finally {
+            release.countDown();
+            server.stop(0);
+        }
+    }
 }

@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -36,6 +37,11 @@ public class MaterializedVideoDownloadService {
     static final String STAGING_DIRECTORY = ".fintube-download";
     /** Hidden marker (ignored by Jellyfin) for folders whose video is a Jellyfin favorite; kept by {@link #evict}. */
     public static final String FAVORITE_MARKER = ".fintube-favorite";
+    /** Upper bounds so one stuck tool can never block the single download worker forever. */
+    static final Duration DOWNLOAD_TIMEOUT = Duration.ofHours(3);
+    static final Duration TRANSCODE_TIMEOUT = Duration.ofHours(6);
+    static final Duration PROBE_TIMEOUT = Duration.ofMinutes(1);
+    private static final int MAX_LOG_BYTES = 64 * 1024;
     private static final String DEFAULT_PO_TOKEN_PROVIDER_ARGS = "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416";
     private final SettingsService settings;
     private final UserVideoRepository userVideos;
@@ -94,15 +100,21 @@ public class MaterializedVideoDownloadService {
                     preferences == null || preferences.getQuality() == null ? current.getOrDefault("stream_quality", "1080") : preferences.getQuality().getValue(),
                     allowed, formatSelector(preferences, current), formatSort(preferences));
             long started = System.nanoTime();
-            Process process = new ProcessBuilder(downloadCommand(current, externalHttp.proxyArgument(current),
-                    poTokenProviderUrl, template, videoId, preferences))
-                    .redirectErrorStream(true).start();
-            byte[] output = process.getInputStream().readAllBytes();
-            int exit = process.waitFor();
+            ProcessSupport.Result result;
+            try {
+                result = ProcessSupport.run(downloadCommand(current, externalHttp.proxyArgument(current),
+                        poTokenProviderUrl, template, videoId, preferences),
+                        timeout(current, "media_download_timeout_minutes", DOWNLOAD_TIMEOUT), MAX_LOG_BYTES);
+            } catch (ProcessSupport.TimeoutExceeded timedOut) {
+                deleteTree(staging);
+                LOG.warn("event=MEDIA_FILE_DOWNLOAD_TIMED_OUT userId={} video={} reason={}", userId, videoId, timedOut.getMessage());
+                return;
+            }
+            int exit = result.exitCode();
             Path media = localMedia(staging);
             if (exit != 0 || media == null) {
                 deleteTree(staging);
-                String detail = new String(output).strip();
+                String detail = result.text();
                 if (detail.length() > 500) detail = detail.substring(0, 500) + "…";
                 LOG.warn("event=MEDIA_FILE_DOWNLOAD_FAILED userId={} video={} exitCode={} detail={}", userId, videoId, exit, detail);
                 return;
@@ -141,6 +153,18 @@ public class MaterializedVideoDownloadService {
             LOG.info("event=MEDIA_FILE_CONVERTED userId={} video={} path={}", userId, videoId, canonical);
         } finally {
             deleteTree(staging);
+        }
+    }
+
+    /** Optional override in minutes from settings; invalid or missing values use the default. */
+    static Duration timeout(Map<String, String> settings, String key, Duration fallback) {
+        try {
+            String raw = settings == null ? null : settings.get(key);
+            if (raw == null || raw.isBlank()) return fallback;
+            long minutes = Long.parseLong(raw.trim());
+            return minutes > 0 ? Duration.ofMinutes(minutes) : fallback;
+        } catch (NumberFormatException invalid) {
+            return fallback;
         }
     }
 
@@ -187,13 +211,19 @@ public class MaterializedVideoDownloadService {
         Files.deleteIfExists(output);
         LOG.info("event=MEDIA_FILE_TRANSCODE_STARTED userId={} video={} videoCodec={} pixelFormat={} audioCodec={}",
                 userId, videoId, info.videoCodec(), info.pixelFormat(), info.audioCodec());
-        Process process = new ProcessBuilder(compatibilityCommand(ffmpeg, media, output, info, allowed))
-                .redirectErrorStream(true).start();
-        byte[] log = process.getInputStream().readAllBytes();
-        int exit = process.waitFor();
+        ProcessSupport.Result result;
+        try {
+            result = ProcessSupport.run(compatibilityCommand(ffmpeg, media, output, info, allowed),
+                    timeout(settings, "media_transcode_timeout_minutes", TRANSCODE_TIMEOUT), MAX_LOG_BYTES);
+        } catch (ProcessSupport.TimeoutExceeded timedOut) {
+            Files.deleteIfExists(output);
+            LOG.warn("event=MEDIA_FILE_TRANSCODE_TIMED_OUT userId={} video={} reason={}", userId, videoId, timedOut.getMessage());
+            return media;
+        }
+        int exit = result.exitCode();
         if (exit != 0 || !Files.isRegularFile(output) || Files.size(output) == 0) {
             Files.deleteIfExists(output);
-            String detail = new String(log, StandardCharsets.UTF_8).strip();
+            String detail = result.text();
             if (detail.length() > 500) detail = detail.substring(0, 500) + "…";
             LOG.warn("event=MEDIA_FILE_TRANSCODE_FAILED userId={} video={} exitCode={} detail={}",
                     userId, videoId, exit, detail);
@@ -222,11 +252,10 @@ public class MaterializedVideoDownloadService {
 
     private static StreamInfo probe(String ffprobe, Path media) throws InterruptedException {
         try {
-            Process process = new ProcessBuilder(ffprobe, "-v", "error",
-                    "-show_entries", "stream=codec_type,codec_name,pix_fmt", "-of", "compact=p=0", media.toString())
-                    .redirectErrorStream(true).start();
-            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            return process.waitFor() == 0 ? parseStreams(output) : null;
+            ProcessSupport.Result result = ProcessSupport.run(List.of(ffprobe, "-v", "error",
+                    "-show_entries", "stream=codec_type,codec_name,pix_fmt", "-of", "compact=p=0", media.toString()),
+                    PROBE_TIMEOUT, MAX_LOG_BYTES);
+            return result.exitCode() == 0 ? parseStreams(new String(result.output(), StandardCharsets.UTF_8)) : null;
         } catch (IOException unavailable) {
             return null;
         }

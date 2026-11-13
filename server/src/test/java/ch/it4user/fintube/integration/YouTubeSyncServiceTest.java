@@ -35,6 +35,18 @@ class YouTubeSyncServiceTest {
     }
 
     @Test
+    void holdsBackStreamsThatAreStillLive() throws Exception {
+        assertThat(YouTubeSyncService.isNotFinished(
+                JSON.readTree("{\"snippet\":{\"liveBroadcastContent\":\"live\"},\"liveStreamingDetails\":{\"actualStartTime\":\"2026-11-07T10:00:00Z\"}}")))
+                .isTrue();
+        assertThat(YouTubeSyncService.isNotFinished(
+                JSON.readTree("{\"snippet\":{\"liveBroadcastContent\":\"upcoming\"}}"))).isTrue();
+        assertThat(YouTubeSyncService.isNotFinished(
+                JSON.readTree("{\"snippet\":{\"liveBroadcastContent\":\"none\"},\"liveStreamingDetails\":{\"actualEndTime\":\"2026-11-07T12:00:00Z\"}}")))
+                .isFalse();
+    }
+
+    @Test
     void rejectsIncrementalShortsWhenShortImportIsDisabled() throws Exception {
         assertThat(YouTubeSyncService.acceptedIncrementalVideo(
                 JSON.readTree("{\"contentDetails\":{\"duration\":\"PT2M3S\"},\"snippet\":{}}"), 1, 0, 1))

@@ -52,23 +52,60 @@ public class SettingsService {
         settingsKey = loadSettingsKey();
     }
 
+    /** Decrypted settings plus which keys are secret, as read at {@code loadedAt}. */
+    private record Snapshot(Map<String, String> plain, Set<String> secrets, long loadedAt) {}
+
+    /**
+     * Settings are read on hot paths (every outbound request, every chunk of a
+     * background download). Reading the table and decrypting every secret each
+     * time is wasteful, so a snapshot is kept for a short time and dropped on
+     * every save. The short lifetime bounds staleness if a save's transaction
+     * commits after a concurrent reader reloaded the old values.
+     */
+    static final long SNAPSHOT_TTL_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+    private volatile Snapshot snapshot;
+
     /** Return settings for trusted backend consumers, masking secrets when requested. */
     @Transactional(readOnly = true)
     public Map<String, String> values(boolean mask) {
+        Snapshot current = snapshot();
         Map<String, String> result = new LinkedHashMap<>();
-        for (SettingEntity setting : settings.findAllByOrderByKeyAsc()) {
-            boolean secret = setting.getSecret() != 0 || SettingsPolicy.isSecret(setting.getKey());
-            if (mask && secret) {
-                result.put(setting.getKey(), SettingsPolicy.MASK);
-            } else {
-                result.put(setting.getKey(), secret ? reveal(setting.getValue()) : setting.getValue());
-            }
+        for (Map.Entry<String, String> entry : current.plain().entrySet()) {
+            boolean secret = current.secrets().contains(entry.getKey());
+            result.put(entry.getKey(), mask && secret ? SettingsPolicy.MASK : entry.getValue());
         }
         return result;
     }
 
     public String value(String key) {
-        return values(false).get(key);
+        return snapshot().plain().get(key);
+    }
+
+    private Snapshot snapshot() {
+        Snapshot current = snapshot;
+        if (current != null && System.nanoTime() - current.loadedAt() < SNAPSHOT_TTL_NANOS) return current;
+        long loadedAt = System.nanoTime();
+        Map<String, String> plain = new LinkedHashMap<>();
+        Set<String> secrets = new java.util.HashSet<>();
+        for (SettingEntity setting : settings.findAllByOrderByKeyAsc()) {
+            boolean secret = setting.getSecret() != 0 || SettingsPolicy.isSecret(setting.getKey());
+            if (secret) secrets.add(setting.getKey());
+            plain.put(setting.getKey(), secret ? reveal(setting.getValue()) : setting.getValue());
+        }
+        Snapshot loaded = new Snapshot(java.util.Collections.unmodifiableMap(plain), Set.copyOf(secrets), loadedAt);
+        snapshot = loaded;
+        return loaded;
+    }
+
+    /** Drop the snapshot now and again once the surrounding transaction commits. */
+    private void invalidate() {
+        snapshot = null;
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override public void afterCompletion(int status) { snapshot = null; }
+                    });
+        }
     }
 
     /** Persist one administrator-controlled setting, encrypting secrets first. */
@@ -80,6 +117,7 @@ public class SettingsService {
         setting.setSecret(secret ? 1 : 0);
         setting.setUpdatedAt(ApplicationClock.now());
         settings.save(setting);
+        invalidate();
     }
 
     private byte[] loadSettingsKey() throws Exception {

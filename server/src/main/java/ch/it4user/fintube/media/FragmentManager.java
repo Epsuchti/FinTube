@@ -11,7 +11,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.FilterInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -42,6 +41,19 @@ public class FragmentManager {
   private static final long REMUX_TIMEOUT_SECONDS = 120;
   private static final long SLOW_DOWNLOAD_MS = 3_000;
   private static final int MAX_PROCESS_DIAGNOSTIC_BYTES = 16 * 1024;
+  /** Time allowed until upstream response headers arrive. */
+  static final java.time.Duration RESPONSE_TIMEOUT = java.time.Duration.ofSeconds(30);
+  /** A body read that makes no progress for this long is aborted and retried. */
+  static final long READ_IDLE_TIMEOUT_MS = 60_000;
+  /** Upper bound for a consumer joining another request's single-flight download. */
+  static final long SINGLE_FLIGHT_WAIT_SECONDS = 600;
+  private static final long FFPROBE_TIMEOUT_SECONDS = 30;
+  private static final java.util.concurrent.ScheduledExecutorService WATCHDOG =
+      java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread thread = new Thread(r, "fintube-download-watchdog");
+        thread.setDaemon(true);
+        return thread;
+      });
   /** Coordinates lease acquisition with maintenance's check-and-unlink step. */
   public static final Object EVICTION_LOCK = new Object();
   final ApplicationPaths paths;
@@ -71,6 +83,20 @@ public class FragmentManager {
     this.cacheEntries = cacheEntries;
     this.cachedFragments = cachedFragments;
     this.externalHttp = externalHttp;
+  }
+
+  /**
+   * Runs before any bean that uses this cache (playback, background fill
+   * recovery) can open a lease, so only stale counts from a previous run are reset.
+   */
+  @jakarta.annotation.PostConstruct
+  void resetStaleLeases() {
+    try {
+      int reset = cacheEntries.resetActiveLeases();
+      if (reset > 0) LOG.info("event=MEDIA_CACHE_STALE_LEASES_RESET videos={}", reset);
+    } catch (RuntimeException failure) {
+      LOG.warn("event=MEDIA_CACHE_STALE_LEASE_RESET_FAILED reason={}", failure.toString());
+    }
   }
 
   FragmentManager(ApplicationPaths paths, SettingsService settingsService,
@@ -173,7 +199,11 @@ public class FragmentManager {
         // background worker could yield to the foreground waiter forever.
         if (high && !active.high) active.promoted = true;
         markActive(video, format, -1, 0);
-        try { return active.result.get(); }
+        try { return active.result.get(SINGLE_FLIGHT_WAIT_SECONDS, TimeUnit.SECONDS); }
+        catch (java.util.concurrent.TimeoutException e) {
+          throw new IOException("timed out after " + SINGLE_FLIGHT_WAIT_SECONDS
+              + " seconds waiting for a shared download of " + key, e);
+        }
         catch (java.util.concurrent.ExecutionException e) {
           Throwable cause = e.getCause();
           if (cause instanceof Exception exception) throw exception;
@@ -328,12 +358,17 @@ public class FragmentManager {
     LOG.debug("event=MEDIA_FRAGMENT_DOWNLOAD_STARTED video={} format={} fragment={} track={} priority={} attempt={} source={} range={}",
         video, format, fragment, track, priority(high), attempt, sourceEndpoint(source),
         ranged ? rangeStart + "-" + (rangeEnd - 1) : "all");
-    HttpRequest.Builder builder = HttpRequest.newBuilder(source).GET();
+    HttpRequest.Builder builder = HttpRequest.newBuilder(source).timeout(RESPONSE_TIMEOUT).GET();
     if (ranged) builder.header("Range", "bytes=" + rangeStart + "-" + (rangeEnd - 1));
     HttpRequest request = builder.build();
     // Read in bounded chunks instead of BodyHandlers.ofFile so a low-priority
     // transfer can yield between reads when unrelated playback is active.
-    HttpResponse<InputStream> response = externalHttp.send(request, HttpResponse.BodyHandlers.ofInputStream());
+    HttpResponse<InputStream> response;
+    try {
+      response = externalHttp.send(request, HttpResponse.BodyHandlers.ofInputStream());
+    } catch (java.net.http.HttpTimeoutException timeout) {
+      throw new RetryableUpstreamException("no upstream response within " + RESPONSE_TIMEOUT.toSeconds() + " seconds");
+    }
     if (response.statusCode() == 401 || response.statusCode() == 403 || response.statusCode() == 410) {
       response.body().close();
       throw new ExpiredSourceException(response.statusCode());
@@ -353,19 +388,29 @@ public class FragmentManager {
     // A server that ignores Range answers 200 with the whole file: skip to the range.
     long skip = ranged && response.statusCode() == 200 ? rangeStart : 0;
     long limit = ranged ? rangeEnd - rangeStart : Long.MAX_VALUE;
-    try (InputStream in = response.body(); var out = Files.newOutputStream(target)) {
+    IdleWatchdog watchdog = new IdleWatchdog(response.body(), READ_IDLE_TIMEOUT_MS);
+    try (InputStream in = response.body(); var out = Files.newOutputStream(target); watchdog) {
       if (skip > 0) in.skipNBytes(skip);
       byte[] buffer = new byte[64 * 1024];
       int read;
       while (bytes < limit && (read = in.read(buffer, 0, (int) Math.min(buffer.length, limit - bytes))) != -1) {
         if (!high && (owner == null || !owner.promoted)) {
-          awaitForegroundTurn();
-          if (owner != null) paceBackground(bytes, started, owner);
+          // Deliberate pauses are not upstream stalls.
+          watchdog.pause();
+          try {
+            awaitForegroundTurn();
+            if (owner != null) paceBackground(bytes, started, owner);
+          } finally {
+            watchdog.resume();
+          }
         }
         out.write(buffer, 0, read);
         bytes += read;
+        watchdog.progress();
       }
     }
+    if (watchdog.fired())
+      throw new IOException("upstream stalled: no data for " + READ_IDLE_TIMEOUT_MS / 1000 + " seconds");
     if (bytes == 0 || !Files.isRegularFile(target) || Files.size(target) == 0)
       throw new IOException("empty upstream fragment");
     if (ranged && bytes != limit)
@@ -422,21 +467,17 @@ public class FragmentManager {
       throw new IOException("ffmpeg executable is unavailable: " + ffmpeg
           + ". Install ffmpeg or set the ffmpeg_path setting to its absolute path.", e);
     }
-    CompletableFuture<byte[]> outputLog = CompletableFuture.supplyAsync(() -> readDiagnostic(process.getInputStream()));
+    CompletableFuture<byte[]> outputLog = ProcessSupport.drainHead(process.getInputStream(), MAX_PROCESS_DIAGNOSTIC_BYTES);
     try {
       if (!process.waitFor(REMUX_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-        process.destroyForcibly();
-        process.waitFor(5, TimeUnit.SECONDS);
+        ProcessSupport.kill(process);
         throw new IOException("stream-copy remux timed out after " + REMUX_TIMEOUT_SECONDS + " seconds");
       }
-      byte[] detail = outputLog.join();
+      byte[] detail = ProcessSupport.await(outputLog);
       if (process.exitValue() != 0 || !Files.isRegularFile(output) || Files.size(output) == 0)
         throw new IOException("stream-copy remux failed" + (detail.length == 0 ? "" : ": " + new String(detail, StandardCharsets.UTF_8)));
     } finally {
-      if (process.isAlive()) {
-        process.destroyForcibly();
-        process.waitFor(5, TimeUnit.SECONDS);
-      }
+      if (process.isAlive()) ProcessSupport.kill(process);
     }
     LOG.debug("event=MEDIA_FRAGMENT_REMUX_SUCCEEDED bytes={} expectedStartSeconds={}", Files.size(output), expectedStart);
     return output;
@@ -449,17 +490,17 @@ public class FragmentManager {
    */
   private Double streamStart(Path media, String ffmpeg) throws Exception {
     String ffprobe = ffprobePath(ffmpeg);
-    Process process;
+    ProcessSupport.Result result;
     try {
-      process = new ProcessBuilder(ffprobe, "-v", "error", "-show_entries", "stream=start_time",
-          "-of", "default=noprint_wrappers=1:nokey=1", media.toString())
-          .redirectErrorStream(true).start();
+      result = ProcessSupport.run(java.util.List.of(ffprobe, "-v", "error", "-show_entries", "stream=start_time",
+          "-of", "default=noprint_wrappers=1:nokey=1", media.toString()),
+          java.time.Duration.ofSeconds(FFPROBE_TIMEOUT_SECONDS), MAX_PROCESS_DIAGNOSTIC_BYTES);
     } catch (IOException e) {
+      // Missing or stuck ffprobe: fall back to the expected start, as before.
       return null;
     }
-    String result = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
-    if (process.waitFor() != 0) return null;
-    return parseStreamStart(result);
+    if (result.exitCode() != 0) return null;
+    return parseStreamStart(new String(result.output(), StandardCharsets.UTF_8).strip());
   }
 
   static Double parseStreamStart(String result) {
@@ -485,21 +526,6 @@ public class FragmentManager {
       return parent == null ? "ffprobe" : parent.resolve("ffprobe").toString();
     }
     return "ffprobe";
-  }
-
-  /** Drain process output completely while retaining only a safe diagnostic prefix. */
-  private static byte[] readDiagnostic(InputStream stream) {
-    try (stream; ByteArrayOutputStream captured = new ByteArrayOutputStream()) {
-      byte[] buffer = new byte[4096];
-      int read;
-      while ((read = stream.read(buffer)) != -1) {
-        int remaining = MAX_PROCESS_DIAGNOSTIC_BYTES - captured.size();
-        if (remaining > 0) captured.write(buffer, 0, Math.min(read, remaining));
-      }
-      return captured.toByteArray();
-    } catch (IOException failure) {
-      throw new java.io.UncheckedIOException(failure);
-    }
   }
 
   private void upsert(String video, String format, String fragment, Path path) throws IOException {
@@ -586,5 +612,44 @@ public class FragmentManager {
   }
   private static final class RetryableUpstreamException extends Exception {
     RetryableUpstreamException(int status) { super("temporary upstream status " + status); }
+    RetryableUpstreamException(String message) { super(message); }
+  }
+
+  /**
+   * Closes an upstream body that stops delivering data. HttpClient has no read
+   * timeout, so without this a stalled connection blocks its thread (and every
+   * single-flight waiter) forever. Closing the stream makes the blocked read fail.
+   */
+  static final class IdleWatchdog implements AutoCloseable {
+    private final InputStream body;
+    private final long idleMillis;
+    private volatile long lastProgress = System.nanoTime();
+    private volatile boolean fired;
+    private final java.util.concurrent.ScheduledFuture<?> check;
+
+    IdleWatchdog(InputStream body, long idleMillis) {
+      this.body = body;
+      this.idleMillis = idleMillis;
+      long period = Math.max(10, Math.min(5_000, idleMillis / 4));
+      this.check = WATCHDOG.scheduleWithFixedDelay(this::check, period, period, TimeUnit.MILLISECONDS);
+    }
+
+    private volatile boolean paused;
+
+    void progress() { lastProgress = System.nanoTime(); }
+
+    void pause() { paused = true; }
+
+    void resume() { lastProgress = System.nanoTime(); paused = false; }
+
+    boolean fired() { return fired; }
+
+    private void check() {
+      if (fired || paused || (System.nanoTime() - lastProgress) / 1_000_000 < idleMillis) return;
+      fired = true;
+      try { body.close(); } catch (IOException ignored) { }
+    }
+
+    @Override public void close() { check.cancel(false); }
   }
 }
